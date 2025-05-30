@@ -1,929 +1,1428 @@
 #!/usr/bin/env python3
 """
-CRITICAL FIXES for ProPicto Training Script
-- Fixed tokenization for T5/MT5 models 
-- Fixed label preparation to prevent NaN losses
-- Added proper input/target prefixes
-- Enhanced error handling for CUDA issues
+Complete Research Pipeline for ProPicto Training
+- HPC optimized with VSC_SCRATCH integration
+- Comprehensive experiment tracking and cataloging
+- Scalable to full datasets with proper resource management
+- Complete metrics and logging for research reports
+- Built-in test runs and validation
 """
 
 import logging
-import argparse
-import json
 import torch
+import json
 import time
+import argparse
 import os
+import sys
+import shutil
+import psutil
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
-from dataclasses import dataclass, field
-from collections import defaultdict
+from datetime import datetime
+from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
 import matplotlib.pyplot as plt
+from collections import defaultdict, Counter
+import math
+import pickle
+import yaml
 
 from transformers import (
-    T5ForConditionalGeneration, T5Tokenizer,
-    MT5ForConditionalGeneration,
-    BartForConditionalGeneration, BartTokenizer,
-    MBartForConditionalGeneration, MBart50TokenizerFast,
+    AutoTokenizer, AutoModelForSeq2SeqLM,
     TrainingArguments, Trainer, DataCollatorForSeq2Seq,
     EarlyStoppingCallback, TrainerCallback
 )
 from datasets import Dataset
-from tqdm import tqdm
 
-@dataclass
-class RobustProPictoConfig:
-    """Enhanced configuration with validation and monitoring"""
-    name: str
-    model_architecture: str
-    training_approach: str
-    
-    # Training hyperparameters
-    learning_rate: float = 3e-4
-    batch_size: int = 8
-    num_epochs: int = 2
-    max_length: int = 128
-    warmup_steps: int = 100
-    weight_decay: float = 0.01
-    gradient_accumulation_steps: int = 1
-    
-    # Monitoring settings
-    logging_steps: int = 50
-    eval_steps: int = 200
-    save_steps: int = 500
-    
-    # Validation settings
-    validate_data: bool = True
-    max_train_samples: Optional[int] = None
-    max_eval_samples: Optional[int] = None
-    
-    # Monitoring settings
-    generate_samples_during_training: bool = True
-    sample_generation_steps: int = 500
-    num_sample_generations: int = 3
-    
-    def __post_init__(self):
-        # Adjust parameters based on architecture
-        if 'base' in self.model_architecture or 'large' in self.model_architecture:
-            self.batch_size = max(2, self.batch_size // 2)
-            self.learning_rate = 1e-4
-            self.gradient_accumulation_steps = 2
-
-class EnhancedDataValidator:
-    """Enhanced data validator with better sanitization"""
+class HPCEnvironment:
+    """HPC environment detection and setup"""
     
     def __init__(self):
-        self.logger = logging.getLogger(__name__)
-    
-    def validate_and_clean_dataset(self, data_path: str, split_name: str) -> Tuple[List[Dict], Dict]:
-        """Validate and clean dataset with detailed reporting"""
-        self.logger.info(f"🔍 Validating and cleaning {split_name} data: {data_path}")
+        self.vsc_scratch = os.environ.get('VSC_SCRATCH')
+        self.vsc_data = os.environ.get('VSC_DATA')
+        self.job_id = os.environ.get('PBS_JOBID', 'interactive')
+        self.node_name = os.environ.get('HOSTNAME', 'unknown')
         
-        with open(data_path, 'r', encoding='utf-8') as f:
-            raw_data = json.load(f)
+    def get_storage_paths(self, experiment_name: str):
+        """Get optimal storage paths for HPC"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
-        validation_results = {
-            'total_examples': len(raw_data),
-            'valid_examples': 0,
-            'cleaned_examples': 0,
-            'errors': [],
-            'warnings': [],
-            'statistics': {},
-            'cleaning_actions': defaultdict(int)
-        }
-        
-        cleaned_data = []
-        input_lengths = []
-        target_lengths = []
-        
-        for i, example in enumerate(raw_data):
-            try:
-                cleaned_example = self._validate_and_clean_example(example, i, validation_results)
-                if cleaned_example:
-                    cleaned_data.append(cleaned_example)
-                    
-                    input_words = len(cleaned_example['input_text'].split())
-                    target_words = len(cleaned_example['target_text'].split())
-                    
-                    input_lengths.append(input_words)
-                    target_lengths.append(target_words)
-                    
-                    validation_results['valid_examples'] += 1
-                    
-            except Exception as e:
-                validation_results['errors'].append(f"Example {i}: Processing error: {str(e)}")
-        
-        # Calculate statistics
-        if input_lengths:
-            validation_results['statistics'] = {
-                'input_length_stats': {
-                    'mean': np.mean(input_lengths),
-                    'std': np.std(input_lengths),
-                    'min': min(input_lengths),
-                    'max': max(input_lengths),
-                    'median': np.median(input_lengths)
-                },
-                'target_length_stats': {
-                    'mean': np.mean(target_lengths),
-                    'std': np.std(target_lengths),
-                    'min': min(target_lengths),
-                    'max': max(target_lengths),
-                    'median': np.median(target_lengths)
-                }
-            }
-        
-        # Log detailed results
-        self._log_validation_results(validation_results, split_name)
-        
-        return cleaned_data, validation_results
-    
-    def _validate_and_clean_example(self, example: Dict, index: int, validation_results: Dict) -> Optional[Dict]:
-        """Validate and clean a single example"""
-        
-        # Check required fields
-        required_fields = ['input_text', 'target_text']
-        for field in required_fields:
-            if field not in example:
-                validation_results['errors'].append(f"Example {index}: Missing field '{field}'")
-                return None
-        
-        # Extract and clean text
-        input_text = self._clean_text(example['input_text'])
-        target_text = self._clean_text(example['target_text'])
-        
-        # Validate after cleaning
-        if not input_text or len(input_text.strip()) == 0:
-            validation_results['errors'].append(f"Example {index}: Empty input after cleaning")
-            return None
-        
-        if not target_text or len(target_text.strip()) == 0:
-            validation_results['errors'].append(f"Example {index}: Empty target after cleaning")
-            return None
-        
-        # Length validation
-        input_words = len(input_text.split())
-        target_words = len(target_text.split())
-        
-        if input_words > 100:
-            validation_results['warnings'].append(f"Example {index}: Very long input ({input_words} words)")
-        
-        if target_words > 100:
-            validation_results['warnings'].append(f"Example {index}: Very long target ({target_words} words)")
-        
-        if target_words < 1:
-            validation_results['errors'].append(f"Example {index}: Target too short ({target_words} words)")
-            return None
-        
-        # Create cleaned example
-        cleaned_example = {
-            'input_text': input_text,
-            'target_text': target_text,
-        }
-        
-        # Preserve other fields
-        for key, value in example.items():
-            if key not in ['input_text', 'target_text']:
-                cleaned_example[key] = value
-        
-        validation_results['cleaned_examples'] += 1
-        return cleaned_example
-    
-    def _clean_text(self, text: str) -> str:
-        """Clean and normalize text"""
-        if not isinstance(text, str):
-            return ""
-        
-        # Basic cleaning
-        text = text.strip()
-        
-        # Remove excessive whitespace
-        text = ' '.join(text.split())
-        
-        # Fix common encoding issues for French
-        text = text.replace("  ", "é")
-        text = text.replace("   ", "é")
-        text = text.replace("  ", "è")
-        text = text.replace("â ", "à ")
-        
-        # Remove problematic characters
-        text = text.replace('\n', ' ')
-        text = text.replace('\t', ' ')
-        text = text.replace('\r', ' ')
-        
-        # French-specific cleaning
-        text = text.replace("'", "'")
-        text = text.replace(""", '"').replace(""", '"')
-        
-        return text.strip()
-    
-    def _log_validation_results(self, results: Dict, split_name: str):
-        """Log detailed validation results"""
-        self.logger.info(f"✅ {split_name} validation complete:")
-        self.logger.info(f"   Total examples: {results['total_examples']}")
-        self.logger.info(f"   Valid examples: {results['valid_examples']}")
-        self.logger.info(f"   Success rate: {results['valid_examples']/results['total_examples']*100:.1f}%")
-        self.logger.info(f"   Errors: {len(results['errors'])}")
-        self.logger.info(f"   Warnings: {len(results['warnings'])}")
-        
-        if results['statistics']:
-            stats = results['statistics']
-            self.logger.info(f"   Input length: {stats['input_length_stats']['mean']:.1f} ± {stats['input_length_stats']['std']:.1f} words")
-            self.logger.info(f"   Target length: {stats['target_length_stats']['mean']:.1f} ± {stats['target_length_stats']['std']:.1f} words")
-        
-        # Show first few errors/warnings
-        if results['errors']:
-            self.logger.error("❌ Sample errors:")
-            for error in results['errors'][:3]:
-                self.logger.error(f"   {error}")
-            if len(results['errors']) > 3:
-                self.logger.error(f"   ... and {len(results['errors']) - 3} more errors")
-        
-        if results['warnings']:
-            self.logger.warning("⚠️  Sample warnings:")
-            for warning in results['warnings'][:3]:
-                self.logger.warning(f"   {warning}")
-            if len(results['warnings']) > 3:
-                self.logger.warning(f"   ... and {len(results['warnings']) - 3} more warnings")
-    
-    def show_data_samples(self, data_path: str, num_samples: int = 3):
-        """Show sample data for inspection"""
-        with open(data_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        
-        self.logger.info(f"📋 Sample data from {Path(data_path).name}:")
-        
-        for i, example in enumerate(data[:num_samples]):
-            self.logger.info(f"\nSample {i+1}:")
-            self.logger.info(f"  Input:  {example.get('input_text', 'N/A')}")
-            self.logger.info(f"  Target: {example.get('target_text', 'N/A')}")
-            if 'id' in example:
-                self.logger.info(f"  ID:     {example['id']}")
-
-class MultilingualProPictoTrainer:
-    """Enhanced trainer with FIXED tokenization and loss handling"""
-    
-    def __init__(self, data_dir: str = "data/processed_propicto"):
-        self.data_dir = Path(data_dir)
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.logger = logging.getLogger(__name__)
-        self.validator = EnhancedDataValidator()
-        
-        # Multilingual model mappings
-        self.multilingual_models = {
-            'mt5-small': 'google/mt5-small',
-            'mt5-base': 'google/mt5-base',
-            'mt5-large': 'google/mt5-large',
-            'mbart-large': 'facebook/mbart-large-50-many-to-many-mmt',
-            'mbart-large-cc25': 'facebook/mbart-large-cc25',
-            't5-small': 't5-small',
-            't5-base': 't5-base',
-            'bart-base': 'facebook/bart-base'
-        }
-        
-        self.logger.info(f"🚀 MultilingualProPictoTrainer initialized")
-        self.logger.info(f"📱 Device: {self.device}")
-        if torch.cuda.is_available():
-            self.logger.info(f"🎮 GPU: {torch.cuda.get_device_name()}")
-            self.logger.info(f"💾 CUDA memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
-    
-    def validate_training_setup(self, config: RobustProPictoConfig) -> bool:
-        """Validate complete training setup"""
-        self.logger.info(f"🔧 Validating training setup for {config.name}")
-        
-        # Check data paths
-        approach_dir = self.data_dir / config.training_approach
-        train_path = approach_dir / "train" / "data.json"
-        valid_path = approach_dir / "valid" / "data.json"
-        
-        if not train_path.exists():
-            self.logger.error(f"❌ Training data not found: {train_path}")
-            return False
-        
-        if not valid_path.exists():
-            self.logger.error(f"❌ Validation data not found: {valid_path}")
-            return False
-        
-        # Validate data
-        if config.validate_data:
-            train_validation = self.validator.validate_and_clean_dataset(str(train_path), "train")
-            valid_validation = self.validator.validate_and_clean_dataset(str(valid_path), "valid")
+        if self.vsc_scratch:
+            # Use VSC_SCRATCH for temporary files and training
+            scratch_base = Path(self.vsc_scratch) / "propicto_experiments"
+            experiment_dir = scratch_base / f"{experiment_name}_{timestamp}"
             
-            if train_validation[1]['errors'] or valid_validation[1]['errors']:
-                self.logger.error("❌ Data validation failed")
-                return False
-        
-        # Show sample data
-        self.validator.show_data_samples(str(train_path), 2)
-        
-        # Check model architecture
-        try:
-            self._load_model_and_tokenizer(config.model_architecture)
-            self.logger.info(f"✅ Model architecture {config.model_architecture} available")
-        except Exception as e:
-            self.logger.error(f"❌ Model architecture validation failed: {e}")
-            return False
-        
-        return True
-    
-    def _load_model_and_tokenizer(self, architecture: str):
-        """Load multilingual or standard models"""
-        model_name = self.multilingual_models.get(architecture, architecture)
-        
-        self.logger.info(f"🌍 Loading model: {model_name}")
-        
-        if 'mt5' in model_name:
-            model = MT5ForConditionalGeneration.from_pretrained(model_name)
-            tokenizer = T5Tokenizer.from_pretrained(model_name)
-            
-        elif 'mbart' in model_name:
-            model = MBartForConditionalGeneration.from_pretrained(model_name)
-            tokenizer = MBart50TokenizerFast.from_pretrained(model_name)
-            tokenizer.src_lang = "en_XX"
-            tokenizer.tgt_lang = "fr_XX"
-            
-        elif 't5' in model_name:
-            model = T5ForConditionalGeneration.from_pretrained(model_name)
-            tokenizer = T5Tokenizer.from_pretrained(model_name)
-            
-        elif 'bart' in model_name:
-            model = BartForConditionalGeneration.from_pretrained(model_name)
-            tokenizer = BartTokenizer.from_pretrained(model_name)
-            
+            # Use VSC_DATA for permanent storage if available
+            if self.vsc_data:
+                permanent_base = Path(self.vsc_data) / "propicto_results"
+                permanent_dir = permanent_base / f"{experiment_name}_{timestamp}"
+            else:
+                permanent_dir = experiment_dir
+                
         else:
-            raise ValueError(f"Unsupported model architecture: {architecture}")
+            # Fallback for non-HPC environments
+            base_dir = Path.cwd() / "experiments"
+            experiment_dir = base_dir / f"{experiment_name}_{timestamp}"
+            permanent_dir = experiment_dir
+        
+        return {
+            'experiment_dir': experiment_dir,
+            'permanent_dir': permanent_dir,
+            'scratch_dir': experiment_dir,
+            'timestamp': timestamp
+        }
+    
+    def get_system_info(self):
+        """Get comprehensive system information"""
+        info = {
+            'hostname': self.node_name,
+            'job_id': self.job_id,
+            'vsc_scratch': self.vsc_scratch,
+            'vsc_data': self.vsc_data,
+            'python_version': sys.version,
+            'torch_version': torch.__version__,
+            'cuda_available': torch.cuda.is_available(),
+            'cpu_count': os.cpu_count(),
+            'memory_gb': psutil.virtual_memory().total / (1024**3),
+        }
+        
+        if torch.cuda.is_available():
+            info.update({
+                'gpu_count': torch.cuda.device_count(),
+                'gpu_names': [torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())],
+                'gpu_memory_gb': [torch.cuda.get_device_properties(i).total_memory / (1024**3) 
+                                for i in range(torch.cuda.device_count())]
+            })
+        
+        return info
+
+def setup_comprehensive_logging(log_dir: Path, experiment_name: str):
+    """Setup comprehensive logging system"""
+    log_dir.mkdir(parents=True, exist_ok=True)
+    
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = log_dir / f"{experiment_name}_{timestamp}.log"
+    
+    # Create formatters
+    detailed_formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s'
+    )
+    simple_formatter = logging.Formatter(
+        '%(asctime)s - %(levelname)s - %(message)s'
+    )
+    
+    # Setup root logger
+    logger = logging.getLogger()
+    logger.setLevel(logging.DEBUG)
+    
+    # Console handler (simple format)
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(simple_formatter)
+    
+    # File handler (detailed format)
+    file_handler = logging.FileHandler(log_file, encoding='utf-8')
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(detailed_formatter)
+    
+    # Add handlers
+    logger.addHandler(console_handler)
+    logger.addHandler(file_handler)
+    
+    logger.info(f"📝 Comprehensive logging initialized: {log_file}")
+    return logger
+
+class ResearchEvaluator:
+    """Research-grade evaluator with comprehensive metrics"""
+    
+    def __init__(self, tokenizer):
+        self.tokenizer = tokenizer
+        self.logger = logging.getLogger(__name__)
+    
+    def evaluate_predictions(self, predictions: List[str], references: List[str]) -> Dict[str, float]:
+        """Calculate comprehensive research metrics"""
+        if not predictions or not references:
+            return {}
+        
+        results = {}
+        
+        # Length statistics
+        pred_lengths = [len(p.split()) for p in predictions if p.strip()]
+        ref_lengths = [len(r.split()) for r in references if r.strip()]
+        
+        if pred_lengths and ref_lengths:
+            results.update({
+                'avg_pred_length': np.mean(pred_lengths),
+                'avg_ref_length': np.mean(ref_lengths),
+                'length_ratio': np.mean(pred_lengths) / np.mean(ref_lengths),
+                'length_std_pred': np.std(pred_lengths),
+                'length_std_ref': np.std(ref_lengths),
+                'min_pred_length': min(pred_lengths),
+                'max_pred_length': max(pred_lengths),
+                'median_pred_length': np.median(pred_lengths)
+            })
+        
+        # Core NLP metrics
+        results['bleu'] = self._calculate_bleu(predictions, references)
+        results['rouge_l'] = self._calculate_rouge_l(predictions, references)
+        
+        # Lexical diversity metrics
+        results.update(self._calculate_lexical_metrics(predictions, references))
+        
+        # French linguistic metrics
+        results.update(self._calculate_french_linguistic_metrics(predictions, references))
+        
+        # Quality assessment metrics
+        results.update(self._calculate_quality_metrics(predictions, references))
+        
+        return results
+    
+    def _calculate_bleu(self, predictions: List[str], references: List[str]) -> float:
+        """BLEU score with individual n-gram precision"""
+        def get_ngrams(tokens, n):
+            return [tuple(tokens[i:i+n]) for i in range(len(tokens)-n+1)]
+        
+        total_score = 0
+        valid_count = 0
+        
+        for pred, ref in zip(predictions, references):
+            pred_tokens = pred.lower().split()
+            ref_tokens = ref.lower().split()
+            
+            if len(pred_tokens) == 0 or len(ref_tokens) == 0:
+                continue
+            
+            scores = []
+            for n in range(1, 5):
+                pred_ngrams = Counter(get_ngrams(pred_tokens, n))
+                ref_ngrams = Counter(get_ngrams(ref_tokens, n))
+                
+                overlap = sum((pred_ngrams & ref_ngrams).values())
+                total = sum(pred_ngrams.values())
+                
+                scores.append(overlap / total if total > 0 else 0.0)
+            
+            if all(s > 0 for s in scores):
+                bleu = math.exp(sum(math.log(s) for s in scores) / len(scores))
+                bp = min(1.0, math.exp(1 - len(ref_tokens) / len(pred_tokens)))
+                total_score += bp * bleu
+                valid_count += 1
+        
+        return total_score / valid_count if valid_count > 0 else 0.0
+    
+    def _calculate_rouge_l(self, predictions: List[str], references: List[str]) -> float:
+        """ROUGE-L F1 score"""
+        def lcs_length(x, y):
+            m, n = len(x), len(y)
+            dp = [[0] * (n + 1) for _ in range(m + 1)]
+            
+            for i in range(1, m + 1):
+                for j in range(1, n + 1):
+                    if x[i-1] == y[j-1]:
+                        dp[i][j] = dp[i-1][j-1] + 1
+                    else:
+                        dp[i][j] = max(dp[i-1][j], dp[i][j-1])
+            return dp[m][n]
+        
+        rouge_scores = []
+        for pred, ref in zip(predictions, references):
+            pred_tokens = pred.lower().split()
+            ref_tokens = ref.lower().split()
+            
+            if len(ref_tokens) == 0:
+                continue
+            
+            lcs_len = lcs_length(pred_tokens, ref_tokens)
+            
+            precision = lcs_len / len(pred_tokens) if len(pred_tokens) > 0 else 0.0
+            recall = lcs_len / len(ref_tokens)
+            
+            if precision + recall > 0:
+                f1 = 2 * precision * recall / (precision + recall)
+                rouge_scores.append(f1)
+        
+        return np.mean(rouge_scores) if rouge_scores else 0.0
+    
+    def _calculate_lexical_metrics(self, predictions: List[str], references: List[str]) -> Dict[str, float]:
+        """Lexical diversity and overlap metrics"""
+        metrics = {}
+        
+        # Vocabulary overlap
+        vocab_overlaps = []
+        for pred, ref in zip(predictions, references):
+            pred_words = set(pred.lower().split())
+            ref_words = set(ref.lower().split())
+            if ref_words:
+                overlap = len(pred_words & ref_words) / len(ref_words)
+                vocab_overlaps.append(overlap)
+        
+        metrics['vocab_overlap'] = np.mean(vocab_overlaps) if vocab_overlaps else 0.0
+        
+        # Type-token ratio (lexical diversity)
+        ttr_scores = []
+        for pred in predictions:
+            words = pred.lower().split()
+            if len(words) > 0:
+                ttr = len(set(words)) / len(words)
+                ttr_scores.append(ttr)
+        
+        metrics['type_token_ratio'] = np.mean(ttr_scores) if ttr_scores else 0.0
+        
+        # Unique words per sentence
+        unique_word_counts = []
+        for pred in predictions:
+            unique_word_counts.append(len(set(pred.lower().split())))
+        
+        metrics['avg_unique_words'] = np.mean(unique_word_counts) if unique_word_counts else 0.0
+        
+        return metrics
+    
+    def _calculate_french_linguistic_metrics(self, predictions: List[str], references: List[str]) -> Dict[str, float]:
+        """French-specific linguistic quality metrics"""
+        metrics = {}
+        
+        # French articles
+        french_articles = {'le', 'la', 'les', 'un', 'une', 'des', 'du', 'de', 'des'}
+        
+        # French pronouns
+        french_pronouns = {'je', 'tu', 'il', 'elle', 'nous', 'vous', 'ils', 'elles', 'me', 'te', 'se', 'lui', 'leur'}
+        
+        # French verbs (common auxiliaries and modals)
+        french_verbs = {'être', 'avoir', 'aller', 'faire', 'pouvoir', 'vouloir', 'devoir', 'savoir'}
+        
+        article_ratios = []
+        pronoun_ratios = []
+        verb_ratios = []
+        
+        for pred in predictions:
+            words = pred.lower().split()
+            if len(words) > 0:
+                article_count = len([w for w in words if w in french_articles])
+                pronoun_count = len([w for w in words if w in french_pronouns])
+                verb_count = len([w for w in words if w in french_verbs])
+                
+                article_ratios.append(article_count / len(words))
+                pronoun_ratios.append(pronoun_count / len(words))
+                verb_ratios.append(verb_count / len(words))
+        
+        metrics['french_article_ratio'] = np.mean(article_ratios) if article_ratios else 0.0
+        metrics['french_pronoun_ratio'] = np.mean(pronoun_ratios) if pronoun_ratios else 0.0
+        metrics['french_verb_ratio'] = np.mean(verb_ratios) if verb_ratios else 0.0
+        
+        return metrics
+    
+    def _calculate_quality_metrics(self, predictions: List[str], references: List[str]) -> Dict[str, float]:
+        """Text quality assessment metrics"""
+        metrics = {}
+        
+        # Fluency (no excessive repetition)
+        fluency_scores = []
+        for pred in predictions:
+            words = pred.lower().split()
+            if len(words) > 0:
+                unique_ratio = len(set(words)) / len(words)
+                fluency_scores.append(unique_ratio)
+        
+        metrics['fluency_score'] = np.mean(fluency_scores) if fluency_scores else 0.0
+        
+        # Generation completeness (non-empty, reasonable length)
+        valid_generations = 0
+        total_generations = len(predictions)
+        
+        for pred in predictions:
+            if (len(pred.strip()) > 0 and 
+                len(pred.split()) > 1 and 
+                '<extra_id_0>' not in pred and
+                len(pred.split()) < 50):  # Not too long
+                valid_generations += 1
+        
+        metrics['generation_success_rate'] = valid_generations / total_generations if total_generations > 0 else 0.0
+        
+        # Average sentence complexity (simple heuristic)
+        complexity_scores = []
+        for pred in predictions:
+            # Count conjunctions and complex punctuation
+            complexity_indicators = [',', ';', 'que', 'qui', 'dont', 'où', 'et', 'mais', 'ou', 'car']
+            complexity_count = sum(1 for word in pred.lower().split() if word in complexity_indicators)
+            complexity_count += pred.count(',') + pred.count(';')
+            
+            word_count = len(pred.split())
+            if word_count > 0:
+                complexity_scores.append(complexity_count / word_count)
+        
+        metrics['complexity_score'] = np.mean(complexity_scores) if complexity_scores else 0.0
+        
+        return metrics
+
+class ResearchCallback(TrainerCallback):
+    """Research-grade training callback with comprehensive monitoring"""
+    
+    def __init__(self, evaluator, eval_dataset, output_dir, config_name, tokenizer, generation_samples=10):
+        self.evaluator = evaluator
+        self.eval_dataset = eval_dataset
+        self.output_dir = Path(output_dir)
+        self.config_name = config_name
+        self.tokenizer = tokenizer  # Store tokenizer directly
+        self.generation_samples = generation_samples
+        self.logger = logging.getLogger(__name__)
+        
+        # Comprehensive tracking
+        self.metrics_history = defaultdict(list)
+        self.best_metrics = {}
+        self.generation_history = []
+        self.training_progress = []
+        self.resource_usage = []
+        
+        # Create subdirectories
+        (self.output_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
+        (self.output_dir / "metrics").mkdir(parents=True, exist_ok=True)
+        (self.output_dir / "samples").mkdir(parents=True, exist_ok=True)
+        
+    def on_train_begin(self, args, state, control, **kwargs):
+        """Log training start"""
+        self.logger.info("🚀 Training started - initializing comprehensive monitoring")
+        self._log_system_resources()
+        
+    def on_epoch_begin(self, args, state, control, **kwargs):
+        """Log epoch start"""
+        self.logger.info(f"📅 Epoch {state.epoch + 1} started")
+        
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        """Track training metrics"""
+        if logs:
+            progress_entry = {
+                'step': state.global_step,
+                'epoch': state.epoch,
+                'timestamp': datetime.now().isoformat(),
+                **{k: v for k, v in logs.items() if isinstance(v, (int, float))}
+            }
+            self.training_progress.append(progress_entry)
+            
+            # Log system resources periodically
+            if state.global_step % 100 == 0:
+                self._log_system_resources()
+    
+    def on_evaluate(self, args, state, control, model=None, tokenizer=None, logs=None, **kwargs):
+        """Comprehensive evaluation"""
+        
+        if state.global_step % (args.eval_steps * 2) == 0:
+            self.logger.info(f"📊 Running comprehensive evaluation at step {state.global_step}")
+            
+            try:
+                # Use stored tokenizer if parameter is None
+                active_tokenizer = tokenizer if tokenizer is not None else self.tokenizer
+                
+                if active_tokenizer is None:
+                    self.logger.warning("⚠️  No tokenizer available for evaluation")
+                    return
+                
+                # Generate predictions
+                predictions, references, inputs = self._generate_comprehensive_predictions(
+                    model, active_tokenizer, self.eval_dataset, 
+                    num_samples=min(200, len(self.eval_dataset))
+                )
+                
+                if not predictions or not references:
+                    self.logger.warning("⚠️  No valid predictions generated")
+                    return
+                
+                # Calculate metrics
+                metrics = self.evaluator.evaluate_predictions(predictions, references)
+                
+                # Log and store metrics
+                self.logger.info("📈 Comprehensive Evaluation Metrics:")
+                evaluation_entry = {
+                    'step': state.global_step,
+                    'epoch': state.epoch,
+                    'timestamp': datetime.now().isoformat(),
+                    'num_samples': len(predictions)
+                }
+                
+                for metric_name, value in metrics.items():
+                    if isinstance(value, (int, float)) and not np.isnan(value):
+                        self.metrics_history[metric_name].append({
+                            'step': state.global_step,
+                            'epoch': state.epoch,
+                            'value': float(value)
+                        })
+                        evaluation_entry[metric_name] = float(value)
+                        self.logger.info(f"   {metric_name}: {value:.4f}")
+                        
+                        # Track best metrics
+                        if metric_name not in self.best_metrics or value > self.best_metrics[metric_name]['value']:
+                            self.best_metrics[metric_name] = {
+                                'value': float(value),
+                                'step': state.global_step,
+                                'epoch': state.epoch
+                            }
+                
+                # Save detailed samples
+                self._save_generation_samples(inputs, predictions, references, state.global_step)
+                
+                # Save metrics snapshot
+                metrics_file = self.output_dir / "metrics" / f"eval_step_{state.global_step}.json"
+                with open(metrics_file, 'w', encoding='utf-8') as f:
+                    json.dump(evaluation_entry, f, ensure_ascii=False, indent=2)
+                
+            except Exception as e:
+                self.logger.error(f"❌ Evaluation failed: {e}")
+                import traceback
+                self.logger.debug(traceback.format_exc())
+    
+    def _generate_comprehensive_predictions(self, model, tokenizer, eval_dataset, num_samples=200):
+        """Generate predictions with input tracking and robust error handling"""
+        model.eval()
+        predictions = []
+        references = []
+        inputs = []
+        
+        # Validate tokenizer
+        if tokenizer is None:
+            self.logger.error("❌ Tokenizer is None in generation function")
+            return [], [], []
+        
+        # Validate tokenizer has required attributes
+        if not hasattr(tokenizer, 'pad_token_id') or tokenizer.pad_token_id is None:
+            self.logger.warning("⚠️  Setting missing pad_token_id")
+            if hasattr(tokenizer, 'eos_token_id') and tokenizer.eos_token_id is not None:
+                tokenizer.pad_token_id = tokenizer.eos_token_id
+            else:
+                self.logger.error("❌ Cannot set pad_token_id - no eos_token_id available")
+                return [], [], []
+        
+        # Safe sampling
+        sample_indices = np.random.choice(
+            len(eval_dataset), 
+            min(num_samples, len(eval_dataset)), 
+            replace=False
+        )
+        sample_indices = [int(idx) for idx in sample_indices]
+        
+        successful_generations = 0
+        
+        with torch.no_grad():
+            for idx in sample_indices:
+                try:
+                    example = eval_dataset[idx]
+                    
+                    # Prepare input
+                    input_ids = torch.tensor([example['input_ids']]).to(model.device)
+                    attention_mask = torch.tensor([example['attention_mask']]).to(model.device)
+                    
+                    # Generate with robust error handling
+                    outputs = model.generate(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        max_length=128,
+                        num_beams=2,
+                        length_penalty=1.0,
+                        early_stopping=True,
+                        pad_token_id=tokenizer.pad_token_id,
+                        eos_token_id=tokenizer.eos_token_id if hasattr(tokenizer, 'eos_token_id') else None,
+                        do_sample=False
+                    )
+                    
+                    # Decode prediction
+                    prediction = tokenizer.decode(outputs[0], skip_special_tokens=True)
+                    
+                    # Decode reference
+                    label_ids = [l for l in example['labels'] if l != -100]
+                    reference = tokenizer.decode(label_ids, skip_special_tokens=True)
+                    
+                    # Decode input
+                    input_text = tokenizer.decode(example['input_ids'], skip_special_tokens=True)
+                    
+                    # Validate outputs
+                    if prediction.strip() and reference.strip() and input_text.strip():
+                        predictions.append(prediction)
+                        references.append(reference)
+                        inputs.append(input_text)
+                        successful_generations += 1
+                    
+                except Exception as e:
+                    self.logger.warning(f"⚠️  Failed to generate for sample {idx}: {e}")
+                    continue
+        
+        model.train()
+        
+        self.logger.info(f"✅ Generated {successful_generations}/{len(sample_indices)} successful predictions")
+        
+        return predictions, references, inputs
+    
+    def _save_generation_samples(self, inputs, predictions, references, step):
+        """Save detailed generation samples"""
+        samples = []
+        sample_count = min(self.generation_samples, len(predictions))
+        
+        for i in range(sample_count):
+            samples.append({
+                'step': step,
+                'sample_id': i,
+                'input': inputs[i],
+                'prediction': predictions[i],
+                'reference': references[i],
+                'input_length': len(inputs[i].split()),
+                'pred_length': len(predictions[i].split()),
+                'ref_length': len(references[i].split())
+            })
+        
+        self.generation_history.extend(samples)
+        
+        # Save samples for this step
+        step_file = self.output_dir / "samples" / f"generation_step_{step}.json"
+        with open(step_file, 'w', encoding='utf-8') as f:
+            json.dump(samples, f, ensure_ascii=False, indent=2)
+    
+    def _log_system_resources(self):
+        """Log system resource usage"""
+        try:
+            memory_info = psutil.virtual_memory()
+            resource_entry = {
+                'timestamp': datetime.now().isoformat(),
+                'memory_percent': memory_info.percent,
+                'memory_used_gb': memory_info.used / (1024**3),
+                'cpu_percent': psutil.cpu_percent(),
+            }
+            
+            if torch.cuda.is_available():
+                for i in range(torch.cuda.device_count()):
+                    memory_allocated = torch.cuda.memory_allocated(i) / (1024**3)
+                    memory_cached = torch.cuda.memory_reserved(i) / (1024**3)
+                    resource_entry[f'gpu_{i}_memory_allocated_gb'] = memory_allocated
+                    resource_entry[f'gpu_{i}_memory_cached_gb'] = memory_cached
+            
+            self.resource_usage.append(resource_entry)
+            
+        except Exception as e:
+            self.logger.debug(f"Could not log resources: {e}")
+    
+    def save_comprehensive_results(self):
+        """Save all collected results"""
+        results = {
+            'metrics_history': dict(self.metrics_history),
+            'best_metrics': self.best_metrics,
+            'generation_history': self.generation_history,
+            'training_progress': self.training_progress,
+            'resource_usage': self.resource_usage,
+            'summary': self._create_comprehensive_summary()
+        }
+        
+        # Save main results
+        with open(self.output_dir / "comprehensive_results.json", 'w', encoding='utf-8') as f:
+            json.dump(results, f, ensure_ascii=False, indent=2)
+        
+        # Save as pickle for Python analysis
+        with open(self.output_dir / "results.pkl", 'wb') as f:
+            pickle.dump(results, f)
+        
+        # Create visualizations
+        self._create_comprehensive_plots()
+        
+        return results
+    
+    def _create_comprehensive_summary(self):
+        """Create comprehensive training summary"""
+        summary = {
+            'total_evaluations': len(self.metrics_history.get('bleu', [])),
+            'training_steps': len(self.training_progress),
+            'best_metrics': {k: v['value'] for k, v in self.best_metrics.items()},
+            'final_metrics': {},
+            'training_stability': {}
+        }
+        
+        # Final metrics
+        for metric_name, history in self.metrics_history.items():
+            if history:
+                values = [item['value'] for item in history]
+                summary['final_metrics'][metric_name] = history[-1]['value']
+                summary['training_stability'][f'{metric_name}_std'] = np.std(values)
+                summary['training_stability'][f'{metric_name}_trend'] = values[-1] - values[0] if len(values) > 1 else 0
+        
+        return summary
+    
+    def _create_comprehensive_plots(self):
+        """Create comprehensive visualization suite"""
+        try:
+            # Training metrics plot
+            self._plot_training_metrics()
+            
+            # Evaluation metrics plot  
+            self._plot_evaluation_metrics()
+            
+            # Resource usage plot
+            self._plot_resource_usage()
+            
+            # Generation quality evolution
+            self._plot_generation_quality()
+            
+        except Exception as e:
+            self.logger.warning(f"⚠️  Could not create plots: {e}")
+    
+    def _plot_training_metrics(self):
+        """Plot training loss and learning rate"""
+        if not self.training_progress:
+            return
+            
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
+        
+        steps = [entry['step'] for entry in self.training_progress if 'train_loss' in entry]
+        losses = [entry['train_loss'] for entry in self.training_progress if 'train_loss' in entry]
+        
+        if steps and losses:
+            ax1.plot(steps, losses, 'b-', alpha=0.7)
+            ax1.set_title('Training Loss')
+            ax1.set_xlabel('Steps')
+            ax1.set_ylabel('Loss')
+            ax1.grid(True, alpha=0.3)
+        
+        # Learning rate
+        lr_steps = [entry['step'] for entry in self.training_progress if 'learning_rate' in entry]
+        lrs = [entry['learning_rate'] for entry in self.training_progress if 'learning_rate' in entry]
+        
+        if lr_steps and lrs:
+            ax2.plot(lr_steps, lrs, 'g-', alpha=0.7)
+            ax2.set_title('Learning Rate Schedule')
+            ax2.set_xlabel('Steps')
+            ax2.set_ylabel('Learning Rate')
+            ax2.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.savefig(self.output_dir / "training_metrics.png", dpi=300, bbox_inches='tight')
+        plt.close()
+    
+    def _plot_evaluation_metrics(self):
+        """Plot evaluation metrics over time"""
+        if not self.metrics_history:
+            return
+            
+        key_metrics = ['bleu', 'rouge_l', 'vocab_overlap', 'fluency_score']
+        available_metrics = [m for m in key_metrics if m in self.metrics_history]
+        
+        if not available_metrics:
+            return
+        
+        fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+        axes = axes.flatten()
+        
+        for i, metric in enumerate(available_metrics[:4]):
+            if i >= 4:
+                break
+                
+            data = self.metrics_history[metric]
+            steps = [item['step'] for item in data]
+            values = [item['value'] for item in data]
+            
+            axes[i].plot(steps, values, 'o-', alpha=0.7)
+            axes[i].set_title(f'{metric.replace("_", " ").title()}')
+            axes[i].set_xlabel('Training Steps')
+            axes[i].set_ylabel(metric)
+            axes[i].grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.savefig(self.output_dir / "evaluation_metrics.png", dpi=300, bbox_inches='tight')
+        plt.close()
+    
+    def _plot_resource_usage(self):
+        """Plot system resource usage"""
+        if not self.resource_usage:
+            return
+            
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
+        
+        timestamps = [entry['timestamp'] for entry in self.resource_usage]
+        memory_usage = [entry.get('memory_percent', 0) for entry in self.resource_usage]
+        cpu_usage = [entry.get('cpu_percent', 0) for entry in self.resource_usage]
+        
+        if memory_usage:
+            ax1.plot(range(len(memory_usage)), memory_usage, 'r-', alpha=0.7)
+            ax1.set_title('Memory Usage %')
+            ax1.set_xlabel('Time Points')
+            ax1.set_ylabel('Memory %')
+            ax1.grid(True, alpha=0.3)
+        
+        if cpu_usage:
+            ax2.plot(range(len(cpu_usage)), cpu_usage, 'b-', alpha=0.7)
+            ax2.set_title('CPU Usage %')
+            ax2.set_xlabel('Time Points')
+            ax2.set_ylabel('CPU %')
+            ax2.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.savefig(self.output_dir / "resource_usage.png", dpi=300, bbox_inches='tight')
+        plt.close()
+    
+    def _plot_generation_quality(self):
+        """Plot generation quality evolution"""
+        if not self.generation_history:
+            return
+            
+        # Group by step
+        steps = sorted(set(item['step'] for item in self.generation_history))
+        avg_pred_lengths = []
+        avg_ref_lengths = []
+        
+        for step in steps:
+            step_samples = [item for item in self.generation_history if item['step'] == step]
+            pred_lengths = [item['pred_length'] for item in step_samples]
+            ref_lengths = [item['ref_length'] for item in step_samples]
+            
+            avg_pred_lengths.append(np.mean(pred_lengths) if pred_lengths else 0)
+            avg_ref_lengths.append(np.mean(ref_lengths) if ref_lengths else 0)
+        
+        if steps and avg_pred_lengths:
+            plt.figure(figsize=(10, 6))
+            plt.plot(steps, avg_pred_lengths, 'b-o', label='Generated', alpha=0.7)
+            plt.plot(steps, avg_ref_lengths, 'r--', label='Reference', alpha=0.7)
+            plt.title('Generation Length Evolution')
+            plt.xlabel('Training Steps')
+            plt.ylabel('Average Length (words)')
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+            plt.savefig(self.output_dir / "generation_quality.png", dpi=300, bbox_inches='tight')
+            plt.close()
+
+class ResearchPipeline:
+    """Complete research pipeline for ProPicto training"""
+    
+    def __init__(self, experiment_name: str = "propicto_research"):
+        self.hpc_env = HPCEnvironment()
+        self.experiment_name = experiment_name
+        
+        # Setup paths
+        self.paths = self.hpc_env.get_storage_paths(experiment_name)
+        self.experiment_dir = self.paths['experiment_dir']
+        self.permanent_dir = self.paths['permanent_dir']
+        
+        # Create directories
+        self.experiment_dir.mkdir(parents=True, exist_ok=True)
+        self.permanent_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Setup logging
+        self.logger = setup_comprehensive_logging(
+            self.experiment_dir / "logs", 
+            experiment_name
+        )
+        
+        # Log system info
+        self.system_info = self.hpc_env.get_system_info()
+        self.logger.info(f"🖥️  System Info: {self.system_info}")
+        
+        # Device setup
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.logger.info(f"📱 Using device: {self.device}")
+        
+    def load_datasets(self, config_name: str) -> Tuple[List[Dict], List[Dict], List[Dict]]:
+        """Load complete datasets with validation"""
+        self.logger.info(f"📊 Loading complete dataset for {config_name}")
+        
+        data_root = Path("data/processed_propicto")
+        config_path = data_root / config_name
+        
+        # Validate paths exist
+        for split in ['train', 'valid', 'test']:
+            split_path = config_path / split / "data.json"
+            if not split_path.exists():
+                raise FileNotFoundError(f"Missing {split} data: {split_path}")
+        
+        # Load all splits
+        datasets = {}
+        for split in ['train', 'valid', 'test']:
+            split_path = config_path / split / "data.json"
+            with open(split_path, 'r', encoding='utf-8') as f:
+                datasets[split] = json.load(f)
+            self.logger.info(f"   {split}: {len(datasets[split]):,} samples")
+        
+        # Data quality validation
+        self._validate_dataset_quality(datasets, config_name)
+        
+        return datasets['train'], datasets['valid'], datasets['test']
+    
+    def _validate_dataset_quality(self, datasets: Dict[str, List], config_name: str):
+        """Validate dataset quality and log statistics"""
+        self.logger.info(f"🔍 Validating dataset quality for {config_name}")
+        
+        quality_report = {
+            'config_name': config_name,
+            'validation_timestamp': datetime.now().isoformat(),
+            'splits': {}
+        }
+        
+        for split_name, data in datasets.items():
+            split_stats = {
+                'total_samples': len(data),
+                'valid_samples': 0,
+                'empty_inputs': 0,
+                'empty_targets': 0,
+                'input_length_stats': {},
+                'target_length_stats': {}
+            }
+            
+            input_lengths = []
+            target_lengths = []
+            
+            for item in data:
+                input_text = item.get('input_text', '').strip()
+                target_text = item.get('target_text', '').strip()
+                
+                if not input_text:
+                    split_stats['empty_inputs'] += 1
+                    continue
+                if not target_text:
+                    split_stats['empty_targets'] += 1
+                    continue
+                
+                split_stats['valid_samples'] += 1
+                input_lengths.append(len(input_text.split()))
+                target_lengths.append(len(target_text.split()))
+            
+            if input_lengths:
+                split_stats['input_length_stats'] = {
+                    'mean': float(np.mean(input_lengths)),
+                    'std': float(np.std(input_lengths)),
+                    'min': int(min(input_lengths)),
+                    'max': int(max(input_lengths)),
+                    'median': float(np.median(input_lengths))
+                }
+                
+                split_stats['target_length_stats'] = {
+                    'mean': float(np.mean(target_lengths)),
+                    'std': float(np.std(target_lengths)),
+                    'min': int(min(target_lengths)),
+                    'max': int(max(target_lengths)),
+                    'median': float(np.median(target_lengths))
+                }
+            
+            quality_report['splits'][split_name] = split_stats
+            
+            # Log summary
+            success_rate = split_stats['valid_samples'] / split_stats['total_samples'] * 100
+            self.logger.info(f"   {split_name}: {success_rate:.1f}% valid samples")
+            
+            if split_stats['input_length_stats']:
+                mean_input = split_stats['input_length_stats']['mean']
+                mean_target = split_stats['target_length_stats']['mean']
+                self.logger.info(f"   {split_name}: avg {mean_input:.1f} input, {mean_target:.1f} target words")
+        
+        # Save quality report
+        quality_file = self.experiment_dir / f"dataset_quality_{config_name}.json"
+        with open(quality_file, 'w', encoding='utf-8') as f:
+            json.dump(quality_report, f, indent=2)
+    
+    def setup_model_and_tokenizer(self, model_choice: str):
+        """Setup model and tokenizer with comprehensive logging"""
+        self.logger.info(f"🤖 Setting up model: {model_choice}")
+        
+        model_configs = {
+            'barthez': {
+                'model_name': 'moussaKam/barthez',
+                'description': 'French BART model, optimized for French generation tasks'
+            },
+            'french_t5': {
+                'model_name': 'plguillou/t5-base-fr-sum-cnndm',
+                'description': 'French T5 model, fine-tuned for French summarization'
+            }
+        }
+        
+        if model_choice not in model_configs:
+            raise ValueError(f"Unknown model choice: {model_choice}")
+        
+        config = model_configs[model_choice]
+        model_name = config['model_name']
+        
+        # Load model and tokenizer
+        self.logger.info(f"📥 Loading {model_name}")
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
         
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
+            self.logger.info("🔧 Set pad_token to eos_token")
         
         model.to(self.device)
-        return model, tokenizer
+        
+        # Log model info
+        param_count = sum(p.numel() for p in model.parameters())
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        
+        model_info = {
+            'model_choice': model_choice,
+            'model_name': model_name,
+            'description': config['description'],
+            'total_parameters': param_count,
+            'trainable_parameters': trainable_params,
+            'vocab_size': tokenizer.vocab_size,
+            'model_type': type(model).__name__,
+            'tokenizer_type': type(tokenizer).__name__
+        }
+        
+        self.logger.info(f"✅ Model loaded: {param_count:,} parameters ({trainable_params:,} trainable)")
+        
+        # Save model info
+        with open(self.experiment_dir / "model_info.json", 'w') as f:
+            json.dump(model_info, f, indent=2)
+        
+        return model, tokenizer, model_info
     
-    def prepare_dataset(self, data_path: str, tokenizer, config: RobustProPictoConfig) -> Dataset:
-        """FIXED: Enhanced dataset preparation with proper T5/MT5 formatting"""
+    def prepare_datasets(self, train_data, valid_data, test_data, tokenizer, config_name, max_samples=None):
+        """Prepare datasets with comprehensive logging"""
+        self.logger.info(f"🔧 Preparing datasets for {config_name}")
         
-        # Validate and clean data
-        cleaned_data, validation_results = self.validator.validate_and_clean_dataset(
-            data_path, Path(data_path).parent.name
-        )
+        # Apply sample limit if specified
+        original_train_size = len(train_data)
+        if max_samples and max_samples < len(train_data):
+            train_data = train_data[:max_samples]
+            self.logger.info(f"🧪 Limited training data: {len(train_data):,} / {original_train_size:,} samples")
         
-        if not cleaned_data:
-            raise ValueError(f"No valid examples found in {data_path}")
-        
-        self.logger.info(f"📊 Using {len(cleaned_data)} cleaned examples")
-        
-        # Limit samples for testing
-        if config.max_train_samples and 'train' in str(data_path):
-            cleaned_data = cleaned_data[:config.max_train_samples]
-            self.logger.info(f"🧪 Limited to {len(cleaned_data)} training samples")
-        elif config.max_eval_samples and ('valid' in str(data_path) or 'test' in str(data_path)):
-            cleaned_data = cleaned_data[:config.max_eval_samples]
-            self.logger.info(f"🧪 Limited to {len(cleaned_data)} evaluation samples")
-        
-        def tokenize_function(examples):
-            """FIXED: Proper tokenization with prefixes for T5/MT5 models"""
+        # Task prefix function
+        def get_task_prefix(config_name: str, input_text: str) -> str:
+            prefixes = {
+                'keywords_to_sentence': lambda x: f"Corriger et compléter: {x.replace('mots:', '').strip()}",
+                'pictos_tokens_to_sentence': lambda x: f"Transformer pictogrammes: {x.replace('tokens:', '').strip()}",
+                'hybrid_to_sentence': lambda x: f"Transformer texte mixte: {x.replace('hybrid:', '').strip()}",
+                'direct_to_sentence': lambda x: f"Corriger texte: {x.replace('direct:', '').strip()}"
+            }
             
-            # Check if we're dealing with T5/MT5 models
-            is_t5_family = any(name in tokenizer.name_or_path.lower() for name in ['t5', 'mt5'])
-            
-            if is_t5_family:
-                # T5/MT5 models need task prefixes
-                # Add "translate French: " prefix for input
-                prefixed_inputs = ["translate French: " + text for text in examples["input_text"]]
-                
-                # Tokenize inputs with prefix
-                model_inputs = tokenizer(
-                    prefixed_inputs,
-                    max_length=config.max_length,
-                    truncation=True,
-                    padding='max_length',
-                    return_tensors=None  # Return lists, not tensors
-                )
-                
-                # Tokenize targets (no prefix needed)
-                with tokenizer.as_target_tokenizer():
-                    labels = tokenizer(
-                        examples["target_text"],
-                        max_length=config.max_length,
-                        truncation=True,
-                        padding='max_length',
-                        return_tensors=None
-                    )
-                
-            elif 'mbart' in tokenizer.name_or_path:
-                # mBART handling
-                model_inputs = tokenizer(
-                    examples["input_text"],
-                    max_length=config.max_length,
-                    truncation=True,
-                    padding='max_length'
-                )
-                
-                with tokenizer.as_target_tokenizer():
-                    labels = tokenizer(
-                        examples["target_text"],
-                        max_length=config.max_length,
-                        truncation=True,
-                        padding='max_length'
-                    )
+            if config_name in prefixes:
+                return prefixes[config_name](input_text)
             else:
-                # BART and other models
-                model_inputs = tokenizer(
-                    examples["input_text"],
-                    max_length=config.max_length,
-                    truncation=True,
-                    padding='max_length'
-                )
-                
-                labels = tokenizer(
-                    examples["target_text"],
-                    max_length=config.max_length,
-                    truncation=True,
-                    padding='max_length'
-                )
+                return f"Transformer: {input_text}"
+        
+        # Tokenization function
+        def tokenize_function(examples):
+            inputs = []
+            targets = []
             
-            # CRITICAL FIX: Properly handle labels
-            model_inputs["labels"] = []
-            for label_ids in labels["input_ids"]:
-                # Convert to list if tensor
-                if hasattr(label_ids, 'tolist'):
-                    label_ids = label_ids.tolist()
-                
-                # Replace padding tokens with -100 (ignore index)
-                label_ids = [
-                    token_id if token_id != tokenizer.pad_token_id else -100 
-                    for token_id in label_ids
-                ]
-                model_inputs["labels"].append(label_ids)
+            for input_text, target_text in zip(examples['input_text'], examples['target_text']):
+                french_input = get_task_prefix(config_name, input_text)
+                inputs.append(french_input)
+                targets.append(target_text)
+            
+            model_inputs = tokenizer(inputs, max_length=128, truncation=True, padding='max_length')
+            labels = tokenizer(targets, max_length=128, truncation=True, padding='max_length')
+            
+            model_inputs["labels"] = [
+                [t if t != tokenizer.pad_token_id else -100 for t in label_ids]
+                for label_ids in labels["input_ids"]
+            ]
             
             return model_inputs
         
-        dataset = Dataset.from_list(cleaned_data)
+        # Show tokenization example
+        if train_data:
+            sample = train_data[0]
+            example_input = get_task_prefix(config_name, sample['input_text'])
+            self.logger.info(f"🔍 Task formulation example:")
+            self.logger.info(f"   Original: {sample['input_text']}")
+            self.logger.info(f"   French:   {example_input}")
+            self.logger.info(f"   Target:   {sample['target_text']}")
         
-        # Show tokenization examples
-        self._show_tokenization_examples(cleaned_data[:2], tokenizer, config)
+        # Create datasets
+        datasets = {}
+        for name, data in [('train', train_data), ('valid', valid_data), ('test', test_data)]:
+            if data:
+                dataset = Dataset.from_list(data)
+                tokenized_dataset = dataset.map(
+                    tokenize_function, 
+                    batched=True, 
+                    remove_columns=dataset.column_names
+                )
+                datasets[name] = tokenized_dataset
+                self.logger.info(f"✅ {name} dataset: {len(tokenized_dataset):,} samples")
         
-        # Use appropriate number of processes
-        num_proc = min(4, os.cpu_count() or 1)
-        dataset = dataset.map(tokenize_function, batched=True, num_proc=num_proc)
-        
-        self.logger.info(f"✅ Dataset prepared: {len(dataset)} examples")
-        return dataset
+        return datasets['train'], datasets['valid'], datasets.get('test')
     
-    def _show_tokenization_examples(self, examples: List[Dict], tokenizer, config: RobustProPictoConfig):
-        """Show detailed tokenization examples with proper formatting"""
-        self.logger.info(f"🔍 Tokenization examples:")
+    def run_experiment(self, config_name: str, model_choice: str = 'barthez', 
+                      max_samples: Optional[int] = None, num_epochs: int = 5,
+                      test_run: bool = False):
+        """Run complete research experiment"""
         
-        is_t5_family = any(name in tokenizer.name_or_path.lower() for name in ['t5', 'mt5'])
+        # Create experiment configuration
+        experiment_config = {
+            'experiment_name': self.experiment_name,
+            'config_name': config_name,
+            'model_choice': model_choice,
+            'max_samples': max_samples,
+            'num_epochs': num_epochs,
+            'test_run': test_run,
+            'timestamp': datetime.now().isoformat(),
+            'experiment_id': self.paths['timestamp'],
+            'system_info': self.system_info,
+            'paths': {k: str(v) for k, v in self.paths.items()}
+        }
         
-        for i, example in enumerate(examples):
-            input_text = example['input_text']
-            target_text = example['target_text']
-            
-            # Apply same preprocessing as in tokenize_function
-            if is_t5_family:
-                prefixed_input = "translate French: " + input_text
-                input_encoding = tokenizer(prefixed_input, max_length=config.max_length, truncation=True, padding='max_length')
-            else:
-                prefixed_input = input_text
-                input_encoding = tokenizer(input_text, max_length=config.max_length, truncation=True, padding='max_length')
-            
-            target_encoding = tokenizer(target_text, max_length=config.max_length, truncation=True, padding='max_length')
-            
-            self.logger.info(f"\nExample {i+1}:")
-            self.logger.info(f"  Raw input:     '{input_text}'")
-            self.logger.info(f"  Prefixed input: '{prefixed_input}'")
-            self.logger.info(f"  Raw target:    '{target_text}'")
-            self.logger.info(f"  Input tokens ({len(input_encoding['input_ids'])}): {input_encoding['input_ids'][:10]}...")
-            self.logger.info(f"  Target tokens ({len(target_encoding['input_ids'])}): {target_encoding['input_ids'][:10]}...")
-            
-            # Show how labels will be processed
-            labels_processed = [
-                token_id if token_id != tokenizer.pad_token_id else -100 
-                for token_id in target_encoding['input_ids']
-            ]
-            non_ignore_labels = [l for l in labels_processed if l != -100]
-            self.logger.info(f"  Labels (non-ignore): {len(non_ignore_labels)} tokens")
-    
-    def train_model(self, config: RobustProPictoConfig) -> Optional[str]:
-        """Enhanced training with FIXED loss handling"""
+        self.logger.info(f"🚀 Starting research experiment: {experiment_config['experiment_id']}")
+        self.logger.info(f"📋 Configuration: {config_name} with {model_choice}")
         
-        # Validate setup
-        if not self.validate_training_setup(config):
-            return None
+        if test_run:
+            self.logger.info("🧪 TEST RUN MODE - Limited samples and epochs")
+            max_samples = min(max_samples or 1000, 1000)
+            num_epochs = min(num_epochs, 2)
         
-        self.logger.info(f"🌍 Starting multilingual training: {config.name}")
-        self.logger.info(f"📋 Configuration:")
-        self.logger.info(f"   Architecture: {config.model_architecture}")
-        self.logger.info(f"   Approach: {config.training_approach}")
-        self.logger.info(f"   Learning rate: {config.learning_rate}")
-        self.logger.info(f"   Batch size: {config.batch_size}")
-        self.logger.info(f"   Epochs: {config.num_epochs}")
-        
-        # Data paths
-        approach_dir = self.data_dir / config.training_approach
-        train_path = approach_dir / "train" / "data.json"
-        valid_path = approach_dir / "valid" / "data.json"
-        test_path = approach_dir / "test" / "data.json"
-        
-        # Load model and tokenizer
-        model, tokenizer = self._load_model_and_tokenizer(config.model_architecture)
-        
-        # Prepare datasets with FIXED tokenization
-        train_dataset = self.prepare_dataset(str(train_path), tokenizer, config)
-        valid_dataset = self.prepare_dataset(str(valid_path), tokenizer, config)
-        
-        # Also prepare test dataset for final evaluation
-        test_dataset = None
-        if test_path.exists():
-            test_dataset = self.prepare_dataset(str(test_path), tokenizer, config)
-            self.logger.info(f"📊 Test dataset prepared: {len(test_dataset)} examples")
-        
-        # Output directory
-        output_dir = f"models/propicto_experiments/{config.name}"
-        Path(output_dir).mkdir(parents=True, exist_ok=True)
-        
-        # Calculate training steps
-        steps_per_epoch = max(1, len(train_dataset) // (config.batch_size * config.gradient_accumulation_steps))
-        total_steps = steps_per_epoch * config.num_epochs
-        
-        self.logger.info(f"📊 Training plan:")
-        self.logger.info(f"   Steps per epoch: {steps_per_epoch}")
-        self.logger.info(f"   Total steps: {total_steps}")
-        self.logger.info(f"   Effective batch size: {config.batch_size * config.gradient_accumulation_steps}")
-        
-        # FIXED: Training arguments with proper loss handling
-        training_args = TrainingArguments(
-            output_dir=output_dir,
-            num_train_epochs=config.num_epochs,
-            per_device_train_batch_size=config.batch_size,
-            per_device_eval_batch_size=config.batch_size,
-            gradient_accumulation_steps=config.gradient_accumulation_steps,
-            learning_rate=config.learning_rate,
-            weight_decay=config.weight_decay,
-            warmup_steps=config.warmup_steps,
-            logging_steps=config.logging_steps,
-            eval_steps=config.eval_steps,
-            save_steps=config.save_steps,
-            evaluation_strategy="steps",
-            save_strategy="steps",
-            load_best_model_at_end=True,
-            metric_for_best_model="eval_loss",
-            save_total_limit=3,
-            fp16=False,  # DISABLED: FP16 can cause NaN issues
-            dataloader_pin_memory=False,
-            report_to=[],
-            logging_dir=f"{output_dir}/logs",
-            run_name=config.name,
-            disable_tqdm=False,
-            # Additional stability settings
-            max_grad_norm=1.0,  # Gradient clipping
-            dataloader_drop_last=True,  # Avoid uneven batches
-            remove_unused_columns=True,
-            label_smoothing_factor=0.0  # No label smoothing to avoid issues
-        )
-        
-        # FIXED: Enhanced data collator with proper handling
-        data_collator = DataCollatorForSeq2Seq(
-            tokenizer=tokenizer,
-            model=model,
-            padding=True,
-            return_tensors="pt",
-            label_pad_token_id=-100  # Explicit ignore index
-        )
-        
-        # Trainer with error handling
-        trainer = Trainer(
-            model=model,
-            args=training_args,
-            train_dataset=train_dataset,
-            eval_dataset=valid_dataset,
-            tokenizer=tokenizer,
-            data_collator=data_collator
-        )
+        # Save experiment config
+        config_file = self.experiment_dir / "experiment_config.yaml"
+        with open(config_file, 'w') as f:
+            yaml.dump(experiment_config, f, default_flow_style=False)
         
         try:
-            # SAFETY: Clear CUDA cache before training
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            # Load datasets
+            train_data, valid_data, test_data = self.load_datasets(config_name)
             
-            # Train with error handling
-            self.logger.info("🚀 Starting FIXED training with proper loss handling...")
+            # Setup model
+            model, tokenizer, model_info = self.setup_model_and_tokenizer(model_choice)
+            
+            # Prepare datasets
+            train_dataset, valid_dataset, test_dataset = self.prepare_datasets(
+                train_data, valid_data, test_data, tokenizer, config_name, max_samples
+            )
+            
+            # Setup evaluation
+            evaluator = ResearchEvaluator(tokenizer)
+            
+            # Setup callback - PASS TOKENIZER
+            callback = ResearchCallback(
+                evaluator=evaluator,
+                eval_dataset=valid_dataset,
+                output_dir=self.experiment_dir,
+                config_name=config_name,
+                tokenizer=tokenizer,  # Pass tokenizer explicitly
+                generation_samples=15
+            )
+            
+            # Calculate training parameters
+            batch_size = 8 if not test_run else 4
+            steps_per_epoch = len(train_dataset) // batch_size
+            eval_steps = max(50, steps_per_epoch // 4)
+            save_steps = eval_steps
+            total_steps = steps_per_epoch * num_epochs
+            
+            self.logger.info(f"📊 Training plan:")
+            self.logger.info(f"   Steps per epoch: {steps_per_epoch}")
+            self.logger.info(f"   Total steps: {total_steps}")
+            self.logger.info(f"   Eval every: {eval_steps} steps")
+            self.logger.info(f"   Batch size: {batch_size}")
+            
+            # Training arguments - VERSION COMPATIBLE
+            try:
+                # Test which parameter name is supported
+                test_args = TrainingArguments(
+                    output_dir="./test_eval_strategy",
+                    eval_strategy="no"
+                )
+                eval_strategy_param = "eval_strategy"
+                self.logger.info("✅ Using 'eval_strategy' (newer Transformers)")
+            except TypeError:
+                eval_strategy_param = "evaluation_strategy"
+                self.logger.info("✅ Using 'evaluation_strategy' (older Transformers)")
+            
+            # Build compatible arguments
+            training_args_dict = {
+                "output_dir": str(self.experiment_dir / "checkpoints"),
+                "num_train_epochs": num_epochs,
+                "per_device_train_batch_size": batch_size,
+                "per_device_eval_batch_size": batch_size,
+                "gradient_accumulation_steps": 1,
+                "learning_rate": 3e-5,
+                "weight_decay": 0.01,
+                "warmup_steps": min(500, total_steps // 10),
+                "logging_steps": max(10, steps_per_epoch // 10),
+                "eval_steps": eval_steps,
+                "save_steps": save_steps,
+                eval_strategy_param: "steps",  # Use detected parameter name
+                "save_strategy": "steps",
+                "load_best_model_at_end": True,
+                "metric_for_best_model": "eval_loss",
+                "save_total_limit": 3,
+                "fp16": False,
+                "dataloader_pin_memory": False,
+                "report_to": [],
+                "remove_unused_columns": True,
+                "run_name": f"{config_name}_{model_choice}_{experiment_config['experiment_id']}",
+                "logging_dir": str(self.experiment_dir / "tensorboard"),
+                "save_safetensors": True
+            }
+            
+            training_args = TrainingArguments(**training_args_dict)
+            
+            # Create trainer
+            trainer = Trainer(
+                model=model,
+                args=training_args,
+                train_dataset=train_dataset,
+                eval_dataset=valid_dataset,
+                data_collator=DataCollatorForSeq2Seq(
+                    tokenizer=tokenizer,
+                    model=model,
+                    padding=True,
+                    label_pad_token_id=-100
+                ),
+                tokenizer=tokenizer,
+                callbacks=[
+                    EarlyStoppingCallback(early_stopping_patience=3),
+                    callback
+                ]
+            )
+            
+            # Training
+            self.logger.info("🏋️ Starting training...")
             start_time = time.time()
             
             trainer.train()
-            training_time = time.time() - start_time
             
-            # Final evaluation on test set
-            test_results = None
+            training_time = time.time() - start_time
+            self.logger.info(f"⏱️  Training completed in {training_time/3600:.2f} hours")
+            
+            # Final test evaluation
+            final_results = {'experiment_config': experiment_config}
+            
             if test_dataset:
                 self.logger.info("🧪 Running final test evaluation...")
-                try:
-                    test_results = trainer.evaluate(test_dataset)
-                    self.logger.info(f"📊 Test results: {test_results}")
-                except Exception as e:
-                    self.logger.warning(f"⚠️  Test evaluation failed: {e}")
+                test_predictions, test_references, test_inputs = callback._generate_comprehensive_predictions(
+                    model, tokenizer, test_dataset, num_samples=min(1000, len(test_dataset))
+                )
+                
+                if test_predictions and test_references:
+                    test_metrics = evaluator.evaluate_predictions(test_predictions, test_references)
+                    final_results['test_metrics'] = test_metrics
+                    
+                    self.logger.info("🧪 Test Results:")
+                    for metric_name, value in test_metrics.items():
+                        if metric_name in ['bleu', 'rouge_l', 'vocab_overlap', 'generation_success_rate']:
+                            self.logger.info(f"   {metric_name}: {value:.4f}")
+                    
+                    # Save test predictions
+                    test_predictions_data = []
+                    sample_size = min(100, len(test_predictions))
+                    for i in range(sample_size):
+                        test_predictions_data.append({
+                            'sample_id': i,
+                            'input': test_inputs[i],
+                            'prediction': test_predictions[i],
+                            'reference': test_references[i]
+                        })
+                    
+                    with open(self.experiment_dir / "test_predictions.json", 'w', encoding='utf-8') as f:
+                        json.dump(test_predictions_data, f, ensure_ascii=False, indent=2)
             
-            # Save final model
-            final_output_dir = f"models/propicto_final/{config.name}"
-            Path(final_output_dir).mkdir(parents=True, exist_ok=True)
+            # Save final model to permanent storage
+            final_model_dir = self.permanent_dir / "final_model"
+            trainer.save_model(final_model_dir)
+            tokenizer.save_pretrained(final_model_dir)
             
-            trainer.save_model(final_output_dir)
-            tokenizer.save_pretrained(final_output_dir)
+            # Save comprehensive results
+            training_results = callback.save_comprehensive_results()
             
-            # Test generation with SAFE parameters
-            self._test_generation_safely(model, tokenizer, train_dataset, final_output_dir)
+            # Compile final results
+            final_results.update({
+                'model_info': model_info,
+                'training_time_hours': training_time / 3600,
+                'training_results': training_results,
+                'dataset_sizes': {
+                    'train': len(train_dataset),
+                    'valid': len(valid_dataset),
+                    'test': len(test_dataset) if test_dataset else 0
+                },
+                'model_path': str(final_model_dir),
+                'experiment_path': str(self.experiment_dir),
+                'permanent_path': str(self.permanent_dir)
+            })
             
-            self.logger.info(f"✅ Training completed successfully!")
-            self.logger.info(f"⏱️  Training time: {training_time / 3600:.2f} hours")
-            self.logger.info(f"📁 Model saved to: {final_output_dir}")
+            # Save final results
+            with open(self.permanent_dir / "final_results.json", 'w') as f:
+                json.dump(final_results, f, indent=2, default=str)
             
-            return final_output_dir
+            # Copy important results to permanent storage
+            self._archive_results()
+            
+            # Log final summary
+            self._log_final_summary(final_results)
+            
+            return self.permanent_dir, final_results
             
         except Exception as e:
-            self.logger.error(f"❌ Training failed: {e}")
-            
-            # Additional debugging info
-            if "nan" in str(e).lower() or "cuda" in str(e).lower():
-                self.logger.error("🔍 Debugging suggestions:")
-                self.logger.error("   1. Try with fp16=False (already set)")
-                self.logger.error("   2. Reduce learning rate")
-                self.logger.error("   3. Check tokenization")
-                self.logger.error("   4. Verify label preparation")
-            
+            self.logger.error(f"❌ Experiment failed: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())
             raise
     
-    def _test_generation_safely(self, model, tokenizer, dataset, output_dir: str):
-        """Test generation with safe parameters to avoid CUDA errors"""
-        self.logger.info("🧪 Testing generation safely...")
+    def _archive_results(self):
+        """Archive important results to permanent storage"""
+        self.logger.info("📦 Archiving results to permanent storage...")
         
-        model.eval()
-        sample_results = []
+        # Files to archive
+        important_files = [
+            "experiment_config.yaml",
+            "comprehensive_results.json",
+            "dataset_quality_*.json",
+            "model_info.json",
+            "*.png",
+            "test_predictions.json"
+        ]
         
-        try:
-            # Get a few samples
-            for i in range(min(3, len(dataset))):
-                example = dataset[i]
-                
-                # Prepare input safely
-                input_ids = torch.tensor([example['input_ids']]).to(model.device)
-                attention_mask = torch.tensor([example['attention_mask']]).to(model.device)
-                
-                # Generate with SAFE parameters
-                with torch.no_grad():
-                    try:
-                        outputs = model.generate(
-                            input_ids=input_ids,
-                            attention_mask=attention_mask,
-                            max_length=50,  # Shorter to avoid issues
-                            num_beams=1,    # Greedy search only
-                            do_sample=False,  # No sampling
-                            early_stopping=True,
-                            pad_token_id=tokenizer.pad_token_id,
-                            eos_token_id=tokenizer.eos_token_id
-                        )
-                        
-                        prediction = tokenizer.decode(outputs[0], skip_special_tokens=True)
-                        
-                        # Get reference
-                        label_ids = [l for l in example['labels'] if l != -100]
-                        reference = tokenizer.decode(label_ids, skip_special_tokens=True)
-                        
-                        sample_results.append({
-                            'input': tokenizer.decode(example['input_ids'], skip_special_tokens=True),
-                            'prediction': prediction,
-                            'reference': reference
-                        })
-                        
-                        self.logger.info(f"Sample {i+1}:")
-                        self.logger.info(f"  Input: {sample_results[-1]['input']}")
-                        self.logger.info(f"  Prediction: {prediction}")
-                        self.logger.info(f"  Reference: {reference}")
-                        
-                    except Exception as gen_e:
-                        self.logger.warning(f"⚠️  Generation failed for sample {i+1}: {gen_e}")
-                        sample_results.append({
-                            'input': 'Error reading input',
-                            'prediction': f'Generation failed: {str(gen_e)}',
-                            'reference': 'Error reading reference'
-                        })
+        for pattern in important_files:
+            for file_path in self.experiment_dir.glob(pattern):
+                if file_path.is_file():
+                    dest_path = self.permanent_dir / file_path.name
+                    shutil.copy2(file_path, dest_path)
+                    self.logger.debug(f"Archived: {file_path.name}")
         
-        except Exception as e:
-            self.logger.warning(f"⚠️  Safe generation test failed: {e}")
+        # Archive logs directory
+        logs_src = self.experiment_dir / "logs"
+        if logs_src.exists():
+            logs_dest = self.permanent_dir / "logs"
+            if logs_dest.exists():
+                shutil.rmtree(logs_dest)
+            shutil.copytree(logs_src, logs_dest)
         
-        # Save results
-        try:
-            with open(f"{output_dir}/generation_test.json", 'w', encoding='utf-8') as f:
-                json.dump(sample_results, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            self.logger.warning(f"⚠️  Could not save generation test: {e}")
+        self.logger.info(f"✅ Results archived to: {self.permanent_dir}")
+    
+    def _log_final_summary(self, results):
+        """Log comprehensive final summary"""
+        self.logger.info("\n" + "="*80)
+        self.logger.info("🎉 RESEARCH EXPERIMENT COMPLETED")
+        self.logger.info("="*80)
         
-        model.train()
-
-# Test configurations with SAFER parameters
-def create_safe_test_configs():
-    """Create safer test configurations to avoid NaN/CUDA issues"""
+        config = results['experiment_config']
+        self.logger.info(f"📋 Experiment: {config['config_name']} with {config['model_choice']}")
+        self.logger.info(f"🆔 ID: {config['experiment_id']}")
+        self.logger.info(f"⏱️  Training time: {results['training_time_hours']:.2f} hours")
+        
+        # Dataset info
+        sizes = results['dataset_sizes']
+        self.logger.info(f"📊 Dataset: {sizes['train']:,} train, {sizes['valid']:,} valid, {sizes['test']:,} test")
+        
+        # Model info
+        model_info = results['model_info']
+        self.logger.info(f"🤖 Model: {model_info['total_parameters']:,} parameters")
+        
+        # Best metrics
+        training_results = results['training_results']
+        best_metrics = training_results.get('best_metrics', {})
+        
+        if best_metrics:
+            self.logger.info("🏆 Best training metrics:")
+            for metric_name, metric_info in best_metrics.items():
+                if metric_name in ['bleu', 'rouge_l', 'vocab_overlap', 'generation_success_rate']:
+                    self.logger.info(f"   {metric_name}: {metric_info['value']:.4f} (step {metric_info['step']})")
+        
+        # Test results
+        if 'test_metrics' in results:
+            test_metrics = results['test_metrics']
+            self.logger.info("🧪 Final test metrics:")
+            for metric_name, value in test_metrics.items():
+                if metric_name in ['bleu', 'rouge_l', 'vocab_overlap', 'generation_success_rate']:
+                    self.logger.info(f"   {metric_name}: {value:.4f}")
+        
+        # Paths
+        self.logger.info(f"📁 Results: {results['permanent_path']}")
+        self.logger.info(f"🤖 Model: {results['model_path']}")
+        
+        # Research recommendations
+        self._log_research_recommendations(results)
+        
+        self.logger.info("="*80)
     
-    configs = []
-    
-    # Ultra safe test - minimal configuration
-    ultra_safe = RobustProPictoConfig(
-        name="ultra_safe_test",
-        model_architecture="mt5-small",
-        training_approach="keywords_to_sentence",
-        num_epochs=1,
-        max_train_samples=10,  # Even smaller
-        max_eval_samples=3,    # Even smaller
-        batch_size=1,          # Smallest possible
-        gradient_accumulation_steps=1,
-        logging_steps=2,
-        eval_steps=5,
-        save_steps=10,
-        learning_rate=1e-4,    # Smaller learning rate
-        warmup_steps=2,        # Minimal warmup
-        generate_samples_during_training=False  # Disable to avoid issues
-    )
-    configs.append(ultra_safe)
-    
-    return configs
-
-def create_quick_test_configs():
-    """Create quick test configurations"""
-    
-    configs = []
-    
-    # Quick test with safer parameters
-    quick_test = RobustProPictoConfig(
-        name="quick_safe_test",
-        model_architecture="mt5-small",
-        training_approach="keywords_to_sentence",
-        num_epochs=1,
-        max_train_samples=20,
-        max_eval_samples=5,
-        batch_size=2,
-        logging_steps=3,
-        eval_steps=10,
-        save_steps=20,
-        learning_rate=3e-5,  # Safer learning rate
-        generate_samples_during_training=False
-    )
-    configs.append(quick_test)
-    
-    return configs
+    def _log_research_recommendations(self, results):
+        """Log research insights and recommendations"""
+        self.logger.info("\n📝 Research Insights:")
+        
+        training_results = results.get('training_results', {})
+        best_metrics = training_results.get('best_metrics', {})
+        test_metrics = results.get('test_metrics', {})
+        
+        # BLEU analysis
+        if 'bleu' in best_metrics and 'bleu' in test_metrics:
+            train_bleu = best_metrics['bleu']['value']
+            test_bleu = test_metrics['bleu']
+            
+            if test_bleu < train_bleu * 0.8:
+                self.logger.info("   ⚠️  Potential overfitting detected (test BLEU much lower than train)")
+            elif test_bleu >= 0.3:
+                self.logger.info("   ✅ Good BLEU performance on test set")
+            
+        # Generation success rate
+        if 'generation_success_rate' in test_metrics:
+            success_rate = test_metrics['generation_success_rate']
+            if success_rate >= 0.8:
+                self.logger.info("   ✅ High generation success rate - model produces valid outputs")
+            elif success_rate >= 0.5:
+                self.logger.info("   ⚠️  Moderate generation success - consider more training")
+            else:
+                self.logger.info("   ❌ Low generation success - model needs significant improvement")
+        
+        # Vocabulary overlap
+        if 'vocab_overlap' in test_metrics:
+            vocab_overlap = test_metrics['vocab_overlap']
+            if vocab_overlap >= 0.6:
+                self.logger.info("   ✅ Good vocabulary overlap with references")
+            else:
+                self.logger.info("   📝 Consider improving vocabulary alignment")
 
 def main():
-    parser = argparse.ArgumentParser(description='FIXED ProPicto Training - NaN and CUDA Issues Resolved')
-    parser.add_argument('--config-type', choices=['ultra-safe', 'quick', 'custom'], 
-                       default='ultra-safe', help='Type of test configuration')
-    parser.add_argument('--model-architecture', 
-                       choices=['mt5-small', 'mt5-base', 't5-small', 't5-base'],
-                       help='Model architecture to use')
-    parser.add_argument('--training-approach',
+    parser = argparse.ArgumentParser(description='Complete Research Pipeline for ProPicto Training')
+    parser.add_argument('--config', required=True,
                        choices=['keywords_to_sentence', 'pictos_tokens_to_sentence', 
                                'hybrid_to_sentence', 'direct_to_sentence'],
-                       default='keywords_to_sentence',
-                       help='Training approach')
-    parser.add_argument('--test-name', help='Custom test name')
-    parser.add_argument('--max-train-samples', type=int, help='Limit training samples')
-    parser.add_argument('--max-eval-samples', type=int, help='Limit eval samples')
-    parser.add_argument('--batch-size', type=int, help='Batch size')
-    parser.add_argument('--num-epochs', type=int, help='Number of epochs')
-    parser.add_argument('--learning-rate', type=float, help='Learning rate')
-    parser.add_argument('--dry-run', action='store_true', help='Validate setup without training')
-    parser.add_argument('--debug-cuda', action='store_true', help='Enable CUDA debugging')
+                       help='Data configuration to use')
+    parser.add_argument('--model', choices=['barthez', 'french_t5'], 
+                       default='barthez', help='French model to use')
+    parser.add_argument('--max-samples', type=int, 
+                       help='Limit training samples (for experimentation)')
+    parser.add_argument('--epochs', type=int, default=5, help='Number of epochs')
+    parser.add_argument('--experiment-name', default='propicto_research',
+                       help='Experiment name for organization')
+    parser.add_argument('--test-run', action='store_true',
+                       help='Run in test mode with limited data and epochs')
     
     args = parser.parse_args()
     
-    # Setup logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.StreamHandler(),
-            logging.FileHandler('propicto_training_fixed.log')
-        ]
-    )
+    print("🔬 Complete Research Pipeline for ProPicto Training")
+    print("=" * 60)
+    print("✅ HPC optimized with VSC_SCRATCH integration")
+    print("✅ Comprehensive experiment tracking and metrics")
+    print("✅ Scalable to full datasets with proper resource management")
+    print("✅ Research-grade logging and result archival")
+    print("✅ Built-in test runs and validation")
     
-    print("🛠️  FIXED ProPicto Training Framework")
-    print("=" * 50)
-    print("✅ Fixed NaN losses and CUDA errors")
-    print("✅ Proper T5/MT5 tokenization with prefixes")
-    print("✅ Enhanced error handling and debugging")
+    if args.test_run:
+        print("🧪 TEST RUN MODE - Limited samples and epochs for quick validation")
     
-    # Enable CUDA debugging if requested
-    if args.debug_cuda:
-        os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
-        print("🔍 CUDA debugging enabled (synchronous execution)")
+    # Initialize pipeline
+    pipeline = ResearchPipeline(args.experiment_name)
     
-    # Check data
-    if not Path("data/processed_propicto").exists():
-        print("❌ No processed ProPicto data found!")
-        print("Run: python propicto_processor.py")
-        return
-    
-    # Initialize trainer
-    trainer = MultilingualProPictoTrainer()
-    
-    # Create configuration
-    if args.model_architecture or args.test_name:
-        # Custom configuration
-        config = RobustProPictoConfig(
-            name=args.test_name or f"custom_{args.model_architecture}_{args.training_approach}",
-            model_architecture=args.model_architecture or "mt5-small",
-            training_approach=args.training_approach,
-            max_train_samples=args.max_train_samples or 10,
-            max_eval_samples=args.max_eval_samples or 3,
-            batch_size=args.batch_size or 1,
-            num_epochs=args.num_epochs or 1,
-            learning_rate=args.learning_rate or 1e-4,
-            generate_samples_during_training=False  # Disable for safety
+    try:
+        # Run experiment
+        results_dir, results = pipeline.run_experiment(
+            config_name=args.config,
+            model_choice=args.model,
+            max_samples=args.max_samples,
+            num_epochs=args.epochs,
+            test_run=args.test_run
         )
-        configs = [config]
-    else:
-        # Predefined configurations
-        if args.config_type == 'ultra-safe':
-            configs = create_safe_test_configs()
-        elif args.config_type == 'quick':
-            configs = create_quick_test_configs()
-        else:
-            configs = create_safe_test_configs()
-    
-    print(f"\n🎯 Running {len(configs)} SAFE configurations:")
-    for config in configs:
-        print(f"   📋 {config.name} ({config.model_architecture}, {config.training_approach})")
-        print(f"      🧪 Samples: {config.max_train_samples} train, {config.max_eval_samples} eval")
-        print(f"      ⚙️  Settings: batch_size={config.batch_size}, lr={config.learning_rate}")
-    
-    if args.dry_run:
-        print("\n🧪 DRY RUN MODE - Validating setups only")
-        for config in configs:
-            print(f"\n🔍 Validating: {config.name}")
-            success = trainer.validate_training_setup(config)
-            print(f"   {'✅ PASS' if success else '❌ FAIL'}")
-        return
-    
-    # Run training with enhanced error handling
-    successful = 0
-    failed = []
-    
-    for i, config in enumerate(configs, 1):
-        print(f"\n🏋️ Training {i}/{len(configs)}: {config.name}")
-        print("-" * 50)
         
-        try:
-            # Clear CUDA cache before each training
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                print("🧹 Cleared CUDA cache")
-            
-            model_path = trainer.train_model(config)
-            if model_path:
-                successful += 1
-                print(f"✅ Success: {config.name}")
-                print(f"📁 Model saved: {model_path}")
-            else:
-                failed.append(config.name)
-                print(f"❌ Failed: {config.name}")
-                
-        except Exception as e:
-            failed.append(config.name)
-            print(f"❌ Error in {config.name}: {e}")
-            
-            # Enhanced error diagnosis
-            error_str = str(e).lower()
-            if "nan" in error_str:
-                print("🔍 NaN Error Detected:")
-                print("   - Check input data for invalid values")
-                print("   - Verify tokenization produces valid labels")
-                print("   - Consider smaller learning rate")
-            elif "cuda" in error_str or "assert" in error_str:
-                print("🔍 CUDA Error Detected:")
-                print("   - Run with --debug-cuda for detailed info")
-                print("   - Check tokenizer pad_token configuration")
-                print("   - Verify model and data device placement")
-            
-            # Continue with next config
-            continue
-    
-    # Summary
-    print(f"\n🎉 TRAINING COMPLETE")
-    print("=" * 30)
-    print(f"✅ Successful: {successful}/{len(configs)}")
-    print(f"❌ Failed: {len(failed)}")
-    
-    if failed:
-        print(f"Failed models: {', '.join(failed)}")
-        print("\n🔧 Troubleshooting suggestions:")
-        print("   1. Try with --debug-cuda for detailed error info")
-        print("   2. Use ultra-safe config with minimal parameters")
-        print("   3. Check GPU memory and clear cache")
-        print("   4. Verify data format and tokenization")
-    
-    if successful > 0:
-        print(f"\n📁 Models saved to: models/propicto_final/")
-        print("🔍 Next steps:")
-        print("   1. Test the trained models")
-        print("   2. Check generation_test.json for sample outputs")
-        print("   3. Review training logs for any warnings")
+        print(f"\n🎉 RESEARCH EXPERIMENT COMPLETED!")
+        print(f"📁 Results: {results_dir}")
+        print(f"🤖 Model: {results['model_path']}")
+        
+        # Show key metrics
+        if 'test_metrics' in results:
+            test_metrics = results['test_metrics']
+            print(f"\n📊 Key Results:")
+            for metric in ['bleu', 'rouge_l', 'generation_success_rate']:
+                if metric in test_metrics:
+                    print(f"   {metric}: {test_metrics[metric]:.3f}")
+        
+        print(f"\n📚 For your research report:")
+        print(f"   - Experiment ID: {results['experiment_config']['experiment_id']}")
+        print(f"   - Configuration: {args.config} with {args.model}")
+        print(f"   - Training samples: {results['dataset_sizes']['train']:,}")
+        print(f"   - Training time: {results['training_time_hours']:.2f} hours")
+        print(f"   - Results archived to permanent storage")
+        
+    except Exception as e:
+        print(f"\n❌ EXPERIMENT FAILED: {e}")
+        print("🔧 Check logs for detailed error information")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
     main()
