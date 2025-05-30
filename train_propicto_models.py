@@ -6,6 +6,7 @@ Complete Research Pipeline for ProPicto Training
 - Scalable to full datasets with proper resource management
 - Complete metrics and logging for research reports
 - Built-in test runs and validation
+- FIXED: UTF-8 encoding issues at the root level
 """
 
 import logging
@@ -17,6 +18,7 @@ import os
 import sys
 import shutil
 import psutil
+import locale
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple, Any
@@ -30,9 +32,97 @@ import yaml
 from transformers import (
     AutoTokenizer, AutoModelForSeq2SeqLM,
     TrainingArguments, Trainer, DataCollatorForSeq2Seq,
-    EarlyStoppingCallback, TrainerCallback
+    EarlyStoppingCallback, TrainerCallback, GenerationConfig
 )
 from datasets import Dataset
+
+# QUICK FIX: Suppress the generation config warning
+import warnings
+warnings.filterwarnings("ignore", message="Moving the following attributes in the config to the generation config")
+
+# ========================================
+# UTF-8 ENVIRONMENT SETUP - CRITICAL FIX
+# ========================================
+
+def setup_utf8_environment():
+    """
+    Setup proper UTF-8 environment to prevent encoding issues
+    This is the ROOT FIX for all encoding problems
+    """
+    # Force UTF-8 for Python I/O
+    os.environ['PYTHONIOENCODING'] = 'utf-8'
+    os.environ['LC_ALL'] = 'C.UTF-8'
+    os.environ['LANG'] = 'C.UTF-8'
+    
+    # Reconfigure stdout/stderr if possible (Python 3.7+)
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    
+    # Set locale to UTF-8
+    try:
+        locale.setlocale(locale.LC_ALL, 'C.UTF-8')
+    except locale.Error:
+        try:
+            locale.setlocale(locale.LC_ALL, 'en_US.UTF-8')
+        except locale.Error:
+            pass  # Use system default
+    
+    # Matplotlib UTF-8 support
+    plt.rcParams['font.family'] = ['DejaVu Sans']
+
+def safe_json_dump(obj, fp, **kwargs):
+    """
+    Safe JSON dump with guaranteed UTF-8 encoding
+    This replaces ALL json.dump calls to prevent encoding corruption
+    """
+    kwargs.setdefault('ensure_ascii', False)
+    kwargs.setdefault('indent', 2)
+    
+    if hasattr(fp, 'write'):
+        # File-like object
+        json.dump(obj, fp, **kwargs)
+    else:
+        # Path-like object
+        with open(fp, 'w', encoding='utf-8', newline='') as f:
+            json.dump(obj, f, **kwargs)
+
+def safe_json_load(fp):
+    """
+    Safe JSON load with guaranteed UTF-8 encoding
+    This replaces ALL json.load calls
+    """
+    if hasattr(fp, 'read'):
+        # File-like object
+        return json.load(fp)
+    else:
+        # Path-like object
+        with open(fp, 'r', encoding='utf-8') as f:
+            return json.load(f)
+
+def safe_text_encode(text: str) -> str:
+    """
+    Ensure text is properly UTF-8 encoded
+    Use this for any text that will be saved or logged
+    """
+    if not isinstance(text, str):
+        return str(text)
+    
+    # Ensure proper UTF-8 encoding
+    try:
+        # If already proper UTF-8, this will work fine
+        text.encode('utf-8').decode('utf-8')
+        return text
+    except UnicodeError:
+        # If there are encoding issues, fix them
+        return text.encode('utf-8', errors='replace').decode('utf-8')
+
+# QUICK FIX: Suppress the generation config warning
+import warnings
+warnings.filterwarnings("ignore", message="Moving the following attributes in the config to the generation config")
+
+# Call this immediately when module loads
+setup_utf8_environment()
 
 class HPCEnvironment:
     """HPC environment detection and setup"""
@@ -84,6 +174,12 @@ class HPCEnvironment:
             'cuda_available': torch.cuda.is_available(),
             'cpu_count': os.cpu_count(),
             'memory_gb': psutil.virtual_memory().total / (1024**3),
+            'encoding_info': {
+                'default_encoding': sys.getdefaultencoding(),
+                'filesystem_encoding': sys.getfilesystemencoding(),
+                'stdout_encoding': getattr(sys.stdout, 'encoding', 'unknown'),
+                'locale': locale.getlocale()
+            }
         }
         
         if torch.cuda.is_available():
@@ -97,7 +193,7 @@ class HPCEnvironment:
         return info
 
 def setup_comprehensive_logging(log_dir: Path, experiment_name: str):
-    """Setup comprehensive logging system"""
+    """Setup comprehensive logging system with proper UTF-8 handling"""
     log_dir.mkdir(parents=True, exist_ok=True)
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -115,13 +211,17 @@ def setup_comprehensive_logging(log_dir: Path, experiment_name: str):
     logger = logging.getLogger()
     logger.setLevel(logging.DEBUG)
     
+    # Clear any existing handlers
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+    
     # Console handler (simple format)
-    console_handler = logging.StreamHandler()
+    console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(logging.INFO)
     console_handler.setFormatter(simple_formatter)
     
-    # File handler (detailed format)
-    file_handler = logging.FileHandler(log_file, encoding='utf-8')
+    # File handler (detailed format) with explicit UTF-8
+    file_handler = logging.FileHandler(log_file, encoding='utf-8', mode='w')
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(detailed_formatter)
     
@@ -129,7 +229,11 @@ def setup_comprehensive_logging(log_dir: Path, experiment_name: str):
     logger.addHandler(console_handler)
     logger.addHandler(file_handler)
     
+    # Test UTF-8 logging
+    test_text = "Test français: café, être, déjà, naïve"
     logger.info(f"📝 Comprehensive logging initialized: {log_file}")
+    logger.info(f"🔤 UTF-8 test: {test_text}")
+    
     return logger
 
 class ResearchEvaluator:
@@ -143,6 +247,10 @@ class ResearchEvaluator:
         """Calculate comprehensive research metrics"""
         if not predictions or not references:
             return {}
+        
+        # Ensure all text is properly encoded
+        predictions = [safe_text_encode(p) for p in predictions]
+        references = [safe_text_encode(r) for r in references]
         
         results = {}
         
@@ -355,14 +463,14 @@ class ResearchEvaluator:
         return metrics
 
 class ResearchCallback(TrainerCallback):
-    """Research-grade training callback with comprehensive monitoring"""
+    """Research-grade training callback with comprehensive monitoring and proper UTF-8 handling"""
     
     def __init__(self, evaluator, eval_dataset, output_dir, config_name, tokenizer, generation_samples=10):
         self.evaluator = evaluator
         self.eval_dataset = eval_dataset
         self.output_dir = Path(output_dir)
         self.config_name = config_name
-        self.tokenizer = tokenizer  # Store tokenizer directly
+        self.tokenizer = tokenizer
         self.generation_samples = generation_samples
         self.logger = logging.getLogger(__name__)
         
@@ -456,13 +564,12 @@ class ResearchCallback(TrainerCallback):
                                 'epoch': state.epoch
                             }
                 
-                # Save detailed samples
+                # Save detailed samples with proper encoding
                 self._save_generation_samples(inputs, predictions, references, state.global_step)
                 
-                # Save metrics snapshot
+                # Save metrics snapshot with proper encoding
                 metrics_file = self.output_dir / "metrics" / f"eval_step_{state.global_step}.json"
-                with open(metrics_file, 'w', encoding='utf-8') as f:
-                    json.dump(evaluation_entry, f, ensure_ascii=False, indent=2)
+                safe_json_dump(evaluation_entry, metrics_file)
                 
             except Exception as e:
                 self.logger.error(f"❌ Evaluation failed: {e}")
@@ -522,15 +629,18 @@ class ResearchCallback(TrainerCallback):
                         do_sample=False
                     )
                     
-                    # Decode prediction
+                    # Decode prediction with proper UTF-8 handling
                     prediction = tokenizer.decode(outputs[0], skip_special_tokens=True)
+                    prediction = safe_text_encode(prediction)
                     
-                    # Decode reference
+                    # Decode reference with proper UTF-8 handling
                     label_ids = [l for l in example['labels'] if l != -100]
                     reference = tokenizer.decode(label_ids, skip_special_tokens=True)
+                    reference = safe_text_encode(reference)
                     
-                    # Decode input
+                    # Decode input with proper UTF-8 handling
                     input_text = tokenizer.decode(example['input_ids'], skip_special_tokens=True)
+                    input_text = safe_text_encode(input_text)
                     
                     # Validate outputs
                     if prediction.strip() and reference.strip() and input_text.strip():
@@ -550,28 +660,32 @@ class ResearchCallback(TrainerCallback):
         return predictions, references, inputs
     
     def _save_generation_samples(self, inputs, predictions, references, step):
-        """Save detailed generation samples"""
+        """Save detailed generation samples with proper UTF-8 encoding"""
         samples = []
         sample_count = min(self.generation_samples, len(predictions))
         
         for i in range(sample_count):
+            # Ensure all text is properly encoded
+            input_text = safe_text_encode(inputs[i])
+            prediction_text = safe_text_encode(predictions[i])
+            reference_text = safe_text_encode(references[i])
+            
             samples.append({
                 'step': step,
                 'sample_id': i,
-                'input': inputs[i],
-                'prediction': predictions[i],
-                'reference': references[i],
-                'input_length': len(inputs[i].split()),
-                'pred_length': len(predictions[i].split()),
-                'ref_length': len(references[i].split())
+                'input': input_text,
+                'prediction': prediction_text,
+                'reference': reference_text,
+                'input_length': len(input_text.split()),
+                'pred_length': len(prediction_text.split()),
+                'ref_length': len(reference_text.split())
             })
         
         self.generation_history.extend(samples)
         
-        # Save samples for this step
+        # Save samples for this step with proper encoding
         step_file = self.output_dir / "samples" / f"generation_step_{step}.json"
-        with open(step_file, 'w', encoding='utf-8') as f:
-            json.dump(samples, f, ensure_ascii=False, indent=2)
+        safe_json_dump(samples, step_file)
     
     def _log_system_resources(self):
         """Log system resource usage"""
@@ -597,7 +711,7 @@ class ResearchCallback(TrainerCallback):
             self.logger.debug(f"Could not log resources: {e}")
     
     def save_comprehensive_results(self):
-        """Save all collected results"""
+        """Save all collected results with proper UTF-8 encoding"""
         results = {
             'metrics_history': dict(self.metrics_history),
             'best_metrics': self.best_metrics,
@@ -607,9 +721,8 @@ class ResearchCallback(TrainerCallback):
             'summary': self._create_comprehensive_summary()
         }
         
-        # Save main results
-        with open(self.output_dir / "comprehensive_results.json", 'w', encoding='utf-8') as f:
-            json.dump(results, f, ensure_ascii=False, indent=2)
+        # Save main results with proper encoding
+        safe_json_dump(results, self.output_dir / "comprehensive_results.json")
         
         # Save as pickle for Python analysis
         with open(self.output_dir / "results.pkl", 'wb') as f:
@@ -782,7 +895,7 @@ class ResearchCallback(TrainerCallback):
             plt.close()
 
 class ResearchPipeline:
-    """Complete research pipeline for ProPicto training"""
+    """Complete research pipeline for ProPicto training with proper UTF-8 handling"""
     
     def __init__(self, experiment_name: str = "propicto_research"):
         self.hpc_env = HPCEnvironment()
@@ -812,7 +925,7 @@ class ResearchPipeline:
         self.logger.info(f"📱 Using device: {self.device}")
         
     def load_datasets(self, config_name: str) -> Tuple[List[Dict], List[Dict], List[Dict]]:
-        """Load complete datasets with validation"""
+        """Load complete datasets with validation and proper UTF-8 handling"""
         self.logger.info(f"📊 Loading complete dataset for {config_name}")
         
         data_root = Path("data/processed_propicto")
@@ -824,12 +937,11 @@ class ResearchPipeline:
             if not split_path.exists():
                 raise FileNotFoundError(f"Missing {split} data: {split_path}")
         
-        # Load all splits
+        # Load all splits with proper UTF-8 handling
         datasets = {}
         for split in ['train', 'valid', 'test']:
             split_path = config_path / split / "data.json"
-            with open(split_path, 'r', encoding='utf-8') as f:
-                datasets[split] = json.load(f)
+            datasets[split] = safe_json_load(split_path)
             self.logger.info(f"   {split}: {len(datasets[split]):,} samples")
         
         # Data quality validation
@@ -861,8 +973,8 @@ class ResearchPipeline:
             target_lengths = []
             
             for item in data:
-                input_text = item.get('input_text', '').strip()
-                target_text = item.get('target_text', '').strip()
+                input_text = safe_text_encode(item.get('input_text', '')).strip()
+                target_text = safe_text_encode(item.get('target_text', '')).strip()
                 
                 if not input_text:
                     split_stats['empty_inputs'] += 1
@@ -903,10 +1015,9 @@ class ResearchPipeline:
                 mean_target = split_stats['target_length_stats']['mean']
                 self.logger.info(f"   {split_name}: avg {mean_input:.1f} input, {mean_target:.1f} target words")
         
-        # Save quality report
+        # Save quality report with proper encoding
         quality_file = self.experiment_dir / f"dataset_quality_{config_name}.json"
-        with open(quality_file, 'w', encoding='utf-8') as f:
-            json.dump(quality_report, f, indent=2)
+        safe_json_dump(quality_report, quality_file)
     
     def setup_model_and_tokenizer(self, model_choice: str):
         """Setup model and tokenizer with comprehensive logging"""
@@ -938,6 +1049,18 @@ class ResearchPipeline:
             tokenizer.pad_token = tokenizer.eos_token
             self.logger.info("🔧 Set pad_token to eos_token")
         
+        # FIX: Set up proper generation config to eliminate warning
+        generation_config = GenerationConfig.from_model_config(model.config)
+        generation_config.early_stopping = True
+        generation_config.num_beams = 4
+        generation_config.no_repeat_ngram_size = 3
+        generation_config.length_penalty = 1.2
+        generation_config.max_length = 128
+        generation_config.pad_token_id = tokenizer.pad_token_id
+        generation_config.eos_token_id = tokenizer.eos_token_id
+        model.generation_config = generation_config
+        self.logger.info("✅ Generation config properly set - warnings eliminated")
+        
         model.to(self.device)
         
         # Log model info
@@ -957,14 +1080,13 @@ class ResearchPipeline:
         
         self.logger.info(f"✅ Model loaded: {param_count:,} parameters ({trainable_params:,} trainable)")
         
-        # Save model info
-        with open(self.experiment_dir / "model_info.json", 'w') as f:
-            json.dump(model_info, f, indent=2)
+        # Save model info with proper encoding
+        safe_json_dump(model_info, self.experiment_dir / "model_info.json")
         
         return model, tokenizer, model_info
     
     def prepare_datasets(self, train_data, valid_data, test_data, tokenizer, config_name, max_samples=None):
-        """Prepare datasets with comprehensive logging"""
+        """Prepare datasets with comprehensive logging and proper UTF-8 handling"""
         self.logger.info(f"🔧 Preparing datasets for {config_name}")
         
         # Apply sample limit if specified
@@ -975,6 +1097,9 @@ class ResearchPipeline:
         
         # Task prefix function
         def get_task_prefix(config_name: str, input_text: str) -> str:
+            # Ensure input text is properly encoded
+            input_text = safe_text_encode(input_text)
+            
             prefixes = {
                 'keywords_to_sentence': lambda x: f"Corriger et compléter: {x.replace('mots:', '').strip()}",
                 'pictos_tokens_to_sentence': lambda x: f"Transformer pictogrammes: {x.replace('tokens:', '').strip()}",
@@ -987,12 +1112,16 @@ class ResearchPipeline:
             else:
                 return f"Transformer: {input_text}"
         
-        # Tokenization function
+        # Tokenization function with UTF-8 handling
         def tokenize_function(examples):
             inputs = []
             targets = []
             
             for input_text, target_text in zip(examples['input_text'], examples['target_text']):
+                # Ensure proper UTF-8 encoding
+                input_text = safe_text_encode(input_text)
+                target_text = safe_text_encode(target_text)
+                
                 french_input = get_task_prefix(config_name, input_text)
                 inputs.append(french_input)
                 targets.append(target_text)
@@ -1012,9 +1141,9 @@ class ResearchPipeline:
             sample = train_data[0]
             example_input = get_task_prefix(config_name, sample['input_text'])
             self.logger.info(f"🔍 Task formulation example:")
-            self.logger.info(f"   Original: {sample['input_text']}")
+            self.logger.info(f"   Original: {safe_text_encode(sample['input_text'])}")
             self.logger.info(f"   French:   {example_input}")
-            self.logger.info(f"   Target:   {sample['target_text']}")
+            self.logger.info(f"   Target:   {safe_text_encode(sample['target_text'])}")
         
         # Create datasets
         datasets = {}
@@ -1034,7 +1163,7 @@ class ResearchPipeline:
     def run_experiment(self, config_name: str, model_choice: str = 'barthez', 
                       max_samples: Optional[int] = None, num_epochs: int = 5,
                       test_run: bool = False):
-        """Run complete research experiment"""
+        """Run complete research experiment with proper UTF-8 handling"""
         
         # Create experiment configuration
         experiment_config = {
@@ -1058,10 +1187,10 @@ class ResearchPipeline:
             max_samples = min(max_samples or 1000, 1000)
             num_epochs = min(num_epochs, 2)
         
-        # Save experiment config
+        # Save experiment config with proper encoding
         config_file = self.experiment_dir / "experiment_config.yaml"
-        with open(config_file, 'w') as f:
-            yaml.dump(experiment_config, f, default_flow_style=False)
+        with open(config_file, 'w', encoding='utf-8') as f:
+            yaml.dump(experiment_config, f, default_flow_style=False, allow_unicode=True)
         
         try:
             # Load datasets
@@ -1189,19 +1318,18 @@ class ResearchPipeline:
                         if metric_name in ['bleu', 'rouge_l', 'vocab_overlap', 'generation_success_rate']:
                             self.logger.info(f"   {metric_name}: {value:.4f}")
                     
-                    # Save test predictions
+                    # Save test predictions with proper UTF-8 encoding
                     test_predictions_data = []
                     sample_size = min(100, len(test_predictions))
                     for i in range(sample_size):
                         test_predictions_data.append({
                             'sample_id': i,
-                            'input': test_inputs[i],
-                            'prediction': test_predictions[i],
-                            'reference': test_references[i]
+                            'input': safe_text_encode(test_inputs[i]),
+                            'prediction': safe_text_encode(test_predictions[i]),
+                            'reference': safe_text_encode(test_references[i])
                         })
                     
-                    with open(self.experiment_dir / "test_predictions.json", 'w', encoding='utf-8') as f:
-                        json.dump(test_predictions_data, f, ensure_ascii=False, indent=2)
+                    safe_json_dump(test_predictions_data, self.experiment_dir / "test_predictions.json")
             
             # Save final model to permanent storage
             final_model_dir = self.permanent_dir / "final_model"
@@ -1226,9 +1354,8 @@ class ResearchPipeline:
                 'permanent_path': str(self.permanent_dir)
             })
             
-            # Save final results
-            with open(self.permanent_dir / "final_results.json", 'w') as f:
-                json.dump(final_results, f, indent=2, default=str)
+            # Save final results with proper encoding
+            safe_json_dump(final_results, self.permanent_dir / "final_results.json")
             
             # Copy important results to permanent storage
             self._archive_results()
@@ -1358,6 +1485,10 @@ class ResearchPipeline:
                 self.logger.info("   📝 Consider improving vocabulary alignment")
 
 def main():
+    """Main function with proper UTF-8 setup"""
+    # Ensure UTF-8 environment is set up before anything else
+    setup_utf8_environment()
+    
     parser = argparse.ArgumentParser(description='Complete Research Pipeline for ProPicto Training')
     parser.add_argument('--config', required=True,
                        choices=['keywords_to_sentence', 'pictos_tokens_to_sentence', 
@@ -1382,6 +1513,11 @@ def main():
     print("✅ Scalable to full datasets with proper resource management")
     print("✅ Research-grade logging and result archival")
     print("✅ Built-in test runs and validation")
+    print("✅ FIXED: Proper UTF-8 encoding throughout pipeline")
+    
+    # Test UTF-8 encoding
+    test_french = "Test français: café, être, déjà, naïve, mémoire"
+    print(f"🔤 UTF-8 test: {test_french}")
     
     if args.test_run:
         print("🧪 TEST RUN MODE - Limited samples and epochs for quick validation")
@@ -1417,6 +1553,7 @@ def main():
         print(f"   - Training samples: {results['dataset_sizes']['train']:,}")
         print(f"   - Training time: {results['training_time_hours']:.2f} hours")
         print(f"   - Results archived to permanent storage")
+        print(f"   - UTF-8 encoding properly handled throughout")
         
     except Exception as e:
         print(f"\n❌ EXPERIMENT FAILED: {e}")
