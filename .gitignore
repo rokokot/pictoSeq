@@ -52,7 +52,7 @@ logs/training/events.out.tfevents.*
 # Data files (adjust as needed)
 data/raw/images/
 data/raw/*.lmdb
-
+data/processed_propicto/*
 # Cache directories
 .cache/
 .transformers_cache/
