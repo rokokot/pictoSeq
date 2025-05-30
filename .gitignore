@@ -1,0 +1,99 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Jupyter Notebooks
+.ipynb_checkpoints
+
+# PyCharm
+.idea/
+
+# VS Code
+.vscode/
+
+# Model files and checkpoints (large files)
+models/checkpoints/
+models/*/pytorch_model.bin
+models/*/model.safetensors
+*.bin
+*.safetensors
+
+# Training logs
+logs/training/runs/
+logs/training/events.out.tfevents.*
+
+# Data files (adjust as needed)
+data/raw/images/
+data/raw/*.lmdb
+
+# Cache directories
+.cache/
+.transformers_cache/
+.huggingface/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Weights & Biases
+wandb/
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+
+# API keys and secrets
+.env
+*.env
+secrets.json
+
+# Coverage reports
+htmlcov/
+.coverage
+.coverage.*
+
+# Pytest
+.pytest_cache/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+
+backup_existing/
