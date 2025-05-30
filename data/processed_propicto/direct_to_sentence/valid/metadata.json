@@ -1,0 +1,10 @@
+{
+  "approach": "direct_to_sentence",
+  "split": "valid",
+  "total_examples": 2592,
+  "avg_seq_length": 6.54320987654321,
+  "avg_text_length": 8.409336419753087,
+  "source_files": [
+    "propicto-eval"
+  ]
+}

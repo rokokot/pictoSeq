@@ -1,0 +1,19 @@
+{
+  "approach": "pictos_tokens_to_sentence",
+  "split": "train",
+  "total_examples": 180731,
+  "avg_seq_length": 7.659792730632819,
+  "avg_text_length": 8.985923831550759,
+  "source_files": [
+    "corpus_cfpb",
+    "corpus_clapi",
+    "corpus_cfpp",
+    "corpus_tufs",
+    "corpus_tcof",
+    "corpus_reunions",
+    "propicto-eval",
+    "corpus_valibel",
+    "corpus_fleuron",
+    "corpus_frenchoralnarrative"
+  ]
+}

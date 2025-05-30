@@ -1,0 +1,10 @@
+{
+  "approach": "pictos_tokens_to_sentence",
+  "split": "valid",
+  "total_examples": 23572,
+  "avg_seq_length": 8.003436280332599,
+  "avg_text_length": 9.506745291023249,
+  "source_files": [
+    "corpus_crfp"
+  ]
+}

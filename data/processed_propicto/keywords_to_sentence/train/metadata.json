@@ -1,0 +1,19 @@
+{
+  "approach": "keywords_to_sentence",
+  "split": "train",
+  "total_examples": 197033,
+  "avg_seq_length": 7.73323757949176,
+  "avg_text_length": 9.07948922261753,
+  "source_files": [
+    "corpus_crfp",
+    "corpus_ofrom",
+    "corpus_clapi",
+    "corpus_cfpp",
+    "corpus_tufs",
+    "corpus_coralrom",
+    "corpus_valibel",
+    "corpus_fleuron",
+    "propicto-eval",
+    "corpus_frenchoralnarrative"
+  ]
+}
