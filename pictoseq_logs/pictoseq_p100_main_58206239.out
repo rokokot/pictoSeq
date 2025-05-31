@@ -1,0 +1,54 @@
+SLURM_JOB_ID: 58206239
+SLURM_JOB_USER: vsc37132
+SLURM_JOB_ACCOUNT: intro_vsc37132
+SLURM_JOB_NAME: pictoseq_p100
+SLURM_CLUSTER_NAME: genius
+SLURM_JOB_PARTITION: gpu_p100
+SLURM_NNODES: 1
+SLURM_NODELIST: r22g35
+SLURM_JOB_CPUS_PER_NODE: 8
+SLURM_JOB_GPUS: 0
+Date: Sun Jun  1 00:19:48 CEST 2025
+Walltime: 01-00:00:00
+========================================================================
+PictoSeq Research Pipeline - Job 58206239
+Started: Sun Jun  1 00:20:00 CEST 2025
+CUDA: True, GPU: Tesla P100-SXM2-16GB
+Starting experimental matrix: 3 models x 4 data configs = 12 experiments
+UTF-8 test: Test français: café, être, déjà, naïve, mémoire, pictogramme
+jiwer available - WER calculation enabled
+2025-06-01 00:20:30,421 - MASTER - INFO - Using device: cuda
+2025-06-01 00:20:30,423 - MASTER - INFO - Pipeline initialized with master results directory: /scratch/leuven/371/vsc37132/pictoseq_results/propicto_comprehensive_20250601_002030_job58206239
+running complete experimental matrix...
+   Total experiments: 12 (3 models × 4 configs)
+   Each experiment evaluates 3 decoding strategies
+   Max samples: 10000 train, 1000 val, 1000 test
+   Results storage: /scratch/leuven/371/vsc37132/pictoseq_results/propicto_comprehensive_20250601_002030_job58206239
+2025-06-01 00:20:30,423 - MASTER - INFO - COMPREHENSIVE PROPICTO RESEARCH PIPELINE
+2025-06-01 00:20:30,423 - MASTER - INFO - ================================================================================
+2025-06-01 00:20:30,423 - MASTER - INFO - Total experiments: 12 (3 models × 4 data configs)
+2025-06-01 00:20:30,423 - MASTER - INFO - Each experiment evaluates 3 decoding strategies
+2025-06-01 00:20:30,423 - MASTER - INFO - Models: 3
+2025-06-01 00:20:30,423 - MASTER - INFO - Data configs: 4
+2025-06-01 00:20:30,423 - MASTER - INFO - Results storage: /scratch/leuven/371/vsc37132/pictoseq_results/propicto_comprehensive_20250601_002030_job58206239
+2025-06-01 00:20:30,424 - MASTER - INFO - 
+============================================================
+2025-06-01 00:20:30,424 - MASTER - INFO - EXPERIMENT 1/12
+2025-06-01 00:20:30,424 - MASTER - INFO - ID: barthez_keywords_to_sentence
+2025-06-01 00:20:30,424 - MASTER - INFO - Model: barthez
+2025-06-01 00:20:30,424 - MASTER - INFO - Data: keywords_to_sentence
+2025-06-01 00:20:30,424 - MASTER - INFO - Will evaluate: greedy, beam_search, nucleus_sampling
+2025-06-01 00:20:30,424 - MASTER - INFO - ============================================================
+2025-06-01 00:20:30,424 - MASTER - INFO - Starting experiment: barthez_keywords_to_sentence
+2025-06-01 00:20:30,424 - MASTER - INFO -    Model: barthez
+2025-06-01 00:20:30,424 - MASTER - INFO -    Data: keywords_to_sentence
+2025-06-01 00:20:30,424 - MASTER - INFO -    Will evaluate all decoding strategies
+2025-06-01 00:20:30,424 - MASTER - INFO -    Experiment directory: /scratch/leuven/371/vsc37132/pictoseq_results/propicto_comprehensive_20250601_002030_job58206239/barthez_keywords_to_sentence
+2025-06-01 00:20:30,426 - MASTER - INFO - Loading dataset: keywords_to_sentence
+2025-06-01 00:20:32,981 - MASTER - INFO -    Loaded: 10000 train, 1000 val, 1000 test
+2025-06-01 00:20:33,100 - MASTER - INFO - Setting up model: barthez
+2025-06-01 00:20:34,693 - MASTER - INFO - Generation config validated and set successfully
+2025-06-01 00:20:35,020 - MASTER - INFO - Model loaded: 139,221,504 parameters
+2025-06-01 00:20:41,895 - MASTER - INFO - Starting training...
+{'loss': 3.9638, 'grad_norm': 7.511977195739746, 'learning_rate': 2.976e-05, 'epoch': 0.1}
+{'loss': 2.3004, 'grad_norm': 6.2339043617248535, 'learning_rate': 2.939265306122449e-05, 'epoch': 0.2}

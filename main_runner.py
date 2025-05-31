@@ -1,14 +1,10 @@
 #!/usr/bin/env python3
 """
-PictoSeq Research Framework - Fixed Version
+PictoSeq experiment runner
 
 This script runs comprehensive experiments on sequence-to-sequence models for pictogram-to-French text generation.
 It is designed to work with processed ProPicto data and includes fixes for GenerationConfig validation issues.
 
-Key fixes:
-- Fixed GenerationConfig validation for greedy search (early_stopping=False when num_beams=1)
-- Improved model compatibility handling
-- Cleaned up code structure and removed unnecessary components
 """
 
 import logging
@@ -29,11 +25,7 @@ import pickle
 import itertools
 from dataclasses import dataclass, field
 
-from transformers import (
-    AutoTokenizer, AutoModelForSeq2SeqLM, T5Tokenizer,
-    TrainingArguments, Trainer, DataCollatorForSeq2Seq,
-    EarlyStoppingCallback, TrainerCallback, GenerationConfig
-)
+from transformers import (AutoTokenizer, AutoModelForSeq2SeqLM, T5Tokenizer,TrainingArguments, Trainer, DataCollatorForSeq2Seq,EarlyStoppingCallback, TrainerCallback, GenerationConfig)
 from datasets import Dataset
 
 # Check for jiwer library for WER calculation
@@ -551,9 +543,9 @@ class ExperimentConfig:
     model_config: ModelConfig
     data_config: DataConfig
     experiment_id: str
-    max_train_samples: int = 50000
-    max_val_samples: int = 5000
-    max_test_samples: int = 5000
+    max_train_samples: int = 10000
+    max_val_samples: int = 1000
+    max_test_samples: int = 1000
     num_epochs: int = 5
     batch_size: int = 8
     learning_rate: float = 3e-5
@@ -630,9 +622,9 @@ class ExperimentalMatrix:
             experiment_id = f"{model_config.name}_{data_config.name}"
             
             # Adjust parameters for test runs to validate pipeline quickly
-            max_train = 1000 if test_run else 50000
-            max_val = 200 if test_run else 5000
-            max_test = 200 if test_run else 5000
+            max_train = 1000 if test_run else 10000
+            max_val = 200 if test_run else 1000
+            max_test = 200 if test_run else 1000
             epochs = 2 if test_run else 5
             
             experiment = ExperimentConfig(
@@ -1925,24 +1917,16 @@ VSC Storage:
                        help='Custom path for results storage (default: $VSC_SCRATCH/pictoSeq_results)')
     
     # Training parameters
-    parser.add_argument('--max-train', type=int, default=50000,
-                       help='Maximum training samples (default: 50000)')
-    parser.add_argument('--max-val', type=int, default=5000,
-                       help='Maximum validation samples (default: 5000)')
-    parser.add_argument('--max-test', type=int, default=5000,
-                       help='Maximum test samples (default: 5000)')
-    parser.add_argument('--epochs', type=int, default=5,
-                       help='Number of training epochs (default: 5)')
-    parser.add_argument('--batch-size', type=int, default=8,
-                       help='Training batch size (default: 8)')
-    parser.add_argument('--learning-rate', type=float, default=3e-5,
-                       help='Learning rate (default: 3e-5)')
+    parser.add_argument('--max-train', type=int, default=10000,help='Maximum training samples (default: 10000)')
+    parser.add_argument('--max-val', type=int, default=1000,help='Maximum validation samples (default: 1000)')
+    parser.add_argument('--max-test', type=int, default=1000,help='Maximum test samples (default: 1000)')
+    parser.add_argument('--epochs', type=int, default=5,help='Number of training epochs (default: 5)')
+    parser.add_argument('--batch-size', type=int, default=8,help='Training batch size (default: 8)')
+    parser.add_argument('--learning-rate', type=float, default=3e-5,help='Learning rate (default: 3e-5)')
     
     # Execution options
-    parser.add_argument('--test-run', action='store_true',
-                       help='Run in test mode (limited samples and epochs)')
-    parser.add_argument('--experiment-name', default='propicto_comprehensive',
-                       help='Base name for experiments')
+    parser.add_argument('--test-run', action='store_true',help='Run in test mode (limited samples and epochs)')
+    parser.add_argument('--experiment-name', default='propicto_comprehensive',help='Base name for experiments')
     
     args = parser.parse_args()
     
@@ -1950,17 +1934,6 @@ VSC Storage:
     if args.single_experiment:
         if not all([args.model, args.data]):
             parser.error("Single experiment mode requires --model and --data")
-    
-    print("COMPREHENSIVE ACADEMIC RESEARCH PIPELINE FOR PROPICTO")
-    print("=" * 80)
-    print("Features:")
-    print("  Multiple model architectures (BARThez, French T5, mT5-base)")
-    print("  Multiple input configurations (4 types)")
-    print("  Multiple decoding strategies (greedy, beam, nucleus)")
-    print("  Comprehensive evaluation metrics including WER")
-    print("  Academic experiment tracking and organization")
-    print("  Pictogram sequence tracking for error analysis")
-    print("  VSC cluster storage optimization")
     
     if args.test_run:
         print("TEST RUN MODE - Limited samples and epochs for validation")
@@ -1976,15 +1949,12 @@ VSC Storage:
         print("jiwer not available - using fallback WER calculation")
     
     # Initialize pipeline with custom results path
-    pipeline = ComprehensiveResearchPipeline(
-        base_experiment_name=args.experiment_name,
-        results_path=args.results_path
-    )
+    pipeline = ComprehensiveResearchPipeline(base_experiment_name=args.experiment_name,results_path=args.results_path)
     
     try:
         if args.run_all:
             # Run complete experimental matrix
-            print(f"\nRunning complete experimental matrix...")
+            print(f"running complete experimental matrix...")
             print(f"   Total experiments: 12 (3 models × 4 configs)")
             print(f"   Each experiment evaluates 3 decoding strategies")
             print(f"   Max samples: {args.max_train} train, {args.max_val} val, {args.max_test} test")
@@ -1995,12 +1965,12 @@ VSC Storage:
             
             results_dir = pipeline.run_all_experiments(test_run=args.test_run)
             
-            print(f"\nCOMPLETE EXPERIMENTAL MATRIX FINISHED!")
+            print(f"COMPLETE EXPERIMENTAL MATRIX FINISHED!")
             print(f"Results directory: {results_dir}")
             
         else:
             # Run single experiment
-            print(f"\nRunning single experiment...")
+            print(f"running single experiment...")
             print(f"   Model: {args.model}")
             print(f"   Data: {args.data}")
             print(f"   Will evaluate all 3 decoding strategies")
@@ -2010,26 +1980,16 @@ VSC Storage:
             model_configs = {m.name: m for m in ExperimentalMatrix.get_model_configs()}
             data_configs = {d.name: d for d in ExperimentalMatrix.get_data_configs()}
             
-            experiment_config = ExperimentConfig(
-                model_config=model_configs[args.model],
-                data_config=data_configs[args.data],
-                experiment_id=f"{args.model}_{args.data}",
-                max_train_samples=args.max_train if not args.test_run else 1000,
-                max_val_samples=args.max_val if not args.test_run else 200,
-                max_test_samples=args.max_test if not args.test_run else 200,
-                num_epochs=args.epochs if not args.test_run else 2,
-                batch_size=args.batch_size,
-                learning_rate=args.learning_rate
-            )
+            experiment_config = ExperimentConfig(model_config=model_configs[args.model],data_config=data_configs[args.data],experiment_id=f"{args.model}_{args.data}",max_train_samples=args.max_train if not args.test_run else 1000,max_val_samples=args.max_val if not args.test_run else 200,max_test_samples=args.max_test if not args.test_run else 200,num_epochs=args.epochs if not args.test_run else 2,batch_size=args.batch_size,learning_rate=args.learning_rate)
             
             results = pipeline.run_single_experiment(experiment_config)
             
-            print(f"\nSINGLE EXPERIMENT COMPLETED!")
+            print(f"SINGLE EXPERIMENT COMPLETED!")
             print(f"Results: {results['model_path']}")
             
             # Show key metrics
             if 'final_test_metrics' in results:
-                print(f"\nKey Results:")
+                print(f"Key Results:")
                 for strategy, metrics in results['final_test_metrics'].items():
                     print(f"   {strategy.upper()}:")
                     for metric in ['bleu', 'rouge_l', 'wer', 'generation_success_rate']:
@@ -2037,8 +1997,8 @@ VSC Storage:
                             print(f"     {metric}: {metrics[metric]:.3f}")
         
     except Exception as e:
-        print(f"\nPIPELINE FAILED: {e}")
-        print("Check logs for detailed error information")
+        print(f"PIPELINE FAILED: {e}")
+        print("check logs for detailed error information")
         import traceback
         traceback.print_exc()
         return 1
