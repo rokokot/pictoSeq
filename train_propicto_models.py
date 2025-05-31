@@ -1,12 +1,6 @@
 #!/usr/bin/env python3
 """
-Complete Research Pipeline for ProPicto Training
-- HPC optimized with VSC_SCRATCH integration
-- Comprehensive experiment tracking and cataloging
-- Scalable to full datasets with proper resource management
-- Complete metrics and logging for research reports
-- Built-in test runs and validation
-- FIXED: UTF-8 encoding issues at the root level
+Main script for running the pictoSeq experiments. 
 """
 
 import logging
@@ -29,37 +23,23 @@ import math
 import pickle
 import yaml
 
-from transformers import (
-    AutoTokenizer, AutoModelForSeq2SeqLM,
-    TrainingArguments, Trainer, DataCollatorForSeq2Seq,
-    EarlyStoppingCallback, TrainerCallback, GenerationConfig
-)
+from transformers import (AutoTokenizer, AutoModelForSeq2SeqLM,TrainingArguments, Trainer, DataCollatorForSeq2Seq,EarlyStoppingCallback, TrainerCallback, GenerationConfig)
 from datasets import Dataset
 
-# QUICK FIX: Suppress the generation config warning
-import warnings
-warnings.filterwarnings("ignore", message="Moving the following attributes in the config to the generation config")
-
-# ========================================
-# UTF-8 ENVIRONMENT SETUP - CRITICAL FIX
-# ========================================
 
 def setup_utf8_environment():
     """
     Setup proper UTF-8 environment to prevent encoding issues
     This is the ROOT FIX for all encoding problems
     """
-    # Force UTF-8 for Python I/O
     os.environ['PYTHONIOENCODING'] = 'utf-8'
     os.environ['LC_ALL'] = 'C.UTF-8'
     os.environ['LANG'] = 'C.UTF-8'
     
-    # Reconfigure stdout/stderr if possible (Python 3.7+)
     if hasattr(sys.stdout, 'reconfigure'):
         sys.stdout.reconfigure(encoding='utf-8')
         sys.stderr.reconfigure(encoding='utf-8')
     
-    # Set locale to UTF-8
     try:
         locale.setlocale(locale.LC_ALL, 'C.UTF-8')
     except locale.Error:
@@ -68,30 +48,20 @@ def setup_utf8_environment():
         except locale.Error:
             pass  # Use system default
     
-    # Matplotlib UTF-8 support
     plt.rcParams['font.family'] = ['DejaVu Sans']
 
 def safe_json_dump(obj, fp, **kwargs):
-    """
-    Safe JSON dump with guaranteed UTF-8 encoding
-    This replaces ALL json.dump calls to prevent encoding corruption
-    """
+    
     kwargs.setdefault('ensure_ascii', False)
     kwargs.setdefault('indent', 2)
     
     if hasattr(fp, 'write'):
-        # File-like object
         json.dump(obj, fp, **kwargs)
     else:
-        # Path-like object
         with open(fp, 'w', encoding='utf-8', newline='') as f:
             json.dump(obj, f, **kwargs)
 
 def safe_json_load(fp):
-    """
-    Safe JSON load with guaranteed UTF-8 encoding
-    This replaces ALL json.load calls
-    """
     if hasattr(fp, 'read'):
         # File-like object
         return json.load(fp)
@@ -1560,17 +1530,16 @@ def main():
                 if metric in test_metrics:
                     print(f"   {metric}: {test_metrics[metric]:.3f}")
         
-        print(f"\n📚 For your research report:")
-        print(f"   - Experiment ID: {results['experiment_config']['experiment_id']}")
+        print(f"configurationreport:")
+        print(f"   - Expe ID: {results['experiment_config']['experiment_id']}")
         print(f"   - Configuration: {args.config} with {args.model}")
         print(f"   - Training samples: {results['dataset_sizes']['train']:,}")
         print(f"   - Training time: {results['training_time_hours']:.2f} hours")
-        print(f"   - Results archived to permanent storage")
-        print(f"   - UTF-8 encoding properly handled throughout")
+
         
     except Exception as e:
-        print(f"\n❌ EXPERIMENT FAILED: {e}")
-        print("🔧 Check logs for detailed error information")
+        print(f"\EXPERIMENT FAILED: {e}")
+        print("see logs ")
         import traceback
         traceback.print_exc()
 

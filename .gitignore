@@ -98,3 +98,6 @@ dmypy.json
 
 backup_existing/
 data/processed_propicto/direct_to_sentence/train/data.json
+
+
+data/*

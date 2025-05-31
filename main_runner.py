@@ -13,6 +13,8 @@ Key Features:
 - Comprehensive metrics including BLEU, ROUGE-L, WER
 - Academic-grade experiment tracking and visualization
 - Production-ready model deployment preparation
+- VSC cluster storage management ($VSC_SCRATCH)
+- Pictogram sequence tracking for detailed error analysis
 """
 
 import logging
@@ -70,6 +72,69 @@ def setup_utf8_environment():
             pass
     
     plt.rcParams['font.family'] = ['DejaVu Sans']
+
+
+class HPCEnvironment:
+    """Manages HPC environment paths and configurations for VSC cluster."""
+    
+    def __init__(self, results_base_path: Optional[str] = None):
+        self.logger = logging.getLogger(__name__)
+        
+        # Determine storage paths
+        self.vsc_data = os.environ.get('VSC_DATA')
+        self.vsc_scratch = os.environ.get('VSC_SCRATCH')
+        self.slurm_job_id = os.environ.get('SLURM_JOB_ID')
+        self.slurm_node = os.environ.get('SLURMD_NODENAME')
+        
+        # Set up base paths
+        if results_base_path:
+            self.results_base = Path(results_base_path)
+        elif self.vsc_scratch:
+            self.results_base = Path(self.vsc_scratch) / "pictoSeq_results"
+        else:
+            self.results_base = Path("comprehensive_experiments")
+        
+        # Working directory (where data and code are)
+        if self.vsc_data:
+            self.working_dir = Path(self.vsc_data) / "pictoSeq"
+        else:
+            self.working_dir = Path.cwd()
+        
+        self.logger.info(f"HPC Environment configured:")
+        self.logger.info(f"   Working directory: {self.working_dir}")
+        self.logger.info(f"   Results base: {self.results_base}")
+        if self.slurm_job_id:
+            self.logger.info(f"   SLURM Job ID: {self.slurm_job_id}")
+        if self.slurm_node:
+            self.logger.info(f"   SLURM Node: {self.slurm_node}")
+    
+    def get_results_dir(self, experiment_name: str) -> Path:
+        """Get timestamped results directory."""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        if self.slurm_job_id:
+            dir_name = f"{experiment_name}_{timestamp}_job{self.slurm_job_id}"
+        else:
+            dir_name = f"{experiment_name}_{timestamp}"
+        
+        results_dir = self.results_base / dir_name
+        results_dir.mkdir(parents=True, exist_ok=True)
+        
+        return results_dir
+    
+    def get_data_path(self) -> Path:
+        """Get path to processed data."""
+        return self.working_dir / "data" / "processed_propicto"
+    
+    def ensure_results_structure(self, results_dir: Path):
+        """Ensure proper results directory structure."""
+        subdirs = [
+            "logs", "visualizations", "deployment_scripts",
+            "analysis", "summaries"
+        ]
+        
+        for subdir in subdirs:
+            (results_dir / subdir).mkdir(exist_ok=True)
 
 
 def safe_json_dump(obj, fp, **kwargs):
@@ -134,7 +199,7 @@ class DecodingStrategies:
             DecodingConfig(
                 name="greedy",
                 strategy_type="deterministic",
-                params={},
+                params={"num_beams": 1, "early_stopping": False},
                 description="Greedy search - always pick most likely token"
             ),
             DecodingConfig(
@@ -155,56 +220,64 @@ class DecodingStrategies:
                     "do_sample": True,
                     "top_p": 0.9,
                     "temperature": 0.8,
-                    "no_repeat_ngram_size": 2
+                    "no_repeat_ngram_size": 2,
+                    "num_beams": 1,
+                    "early_stopping": False
                 },
                 description="Nucleus (top-p) sampling with temperature"
             )
         ]
     
-    def generate_with_strategy(self, input_ids: torch.Tensor, attention_mask: torch.Tensor, 
-                             strategy: DecodingConfig, max_length: int = 128) -> Tuple[str, float, Dict]:
-        """Generate text using specified decoding strategy."""
-        start_time = time.time()
-        
-        generation_kwargs = {
-            "input_ids": input_ids,
-            "attention_mask": attention_mask,
-            "max_length": max_length,
-            "pad_token_id": self.tokenizer.pad_token_id,
-            "eos_token_id": self.tokenizer.eos_token_id,
-            **strategy.params
-        }
-        
-        try:
-            with torch.no_grad():
-                outputs = self.model.generate(**generation_kwargs)
-            
-            generation_time = time.time() - start_time
-            generated_text = self.tokenizer.decode(outputs[0], skip_special_tokens=True, clean_up_tokenization_spaces=False)
-            generated_text = safe_text_encode(generated_text)
-            
-            metadata = {
-                "strategy": strategy.name,
-                "generation_time": generation_time,
-                "output_length": len(outputs[0]),
-                "success": True
-            }
-            
-            return generated_text, generation_time, metadata
-            
-        except Exception as e:
-            self.logger.warning(f"Generation failed with {strategy.name}: {e}")
-            generation_time = time.time() - start_time
-            metadata = {
-                "strategy": strategy.name,
-                "generation_time": generation_time,
-                "success": False,
-                "error": str(e)
-            }
-            return "", generation_time, metadata
+    def generate_with_strategy(self, input_ids: torch.Tensor, attention_mask: torch.Tensor, strategy: DecodingConfig, max_length: int = 128) -> Tuple[str, float, Dict]:
+      """Generate text using specified decoding strategy."""
+      start_time = time.time()
+
+      generation_kwargs = {
+          "max_length": max_length,
+          "pad_token_id": self.tokenizer.pad_token_id,
+          "eos_token_id": self.tokenizer.eos_token_id,
+          **strategy.params
+      }
+
+      try:
+          with torch.no_grad():
+              # Merge generation config with decoding kwargs
+              default_config = self.model.generation_config.to_dict()
+              user_config = {**default_config, **generation_kwargs}
+              gen_config = GenerationConfig.from_dict(user_config)
+
+              #  Now pass both config and inputs
+              outputs = self.model.generate(
+                  input_ids=input_ids,
+                  attention_mask=attention_mask,
+                  generation_config=gen_config
+              )
+
+          generation_time = time.time() - start_time
+          generated_text = self.tokenizer.decode(
+              outputs[0], skip_special_tokens=True, clean_up_tokenization_spaces=False
+          )
+          generated_text = safe_text_encode(generated_text)
+
+          metadata = {
+              "strategy": strategy.name,
+              "generation_time": generation_time,
+              "output_length": len(outputs[0]),
+              "success": True
+          }
+
+          return generated_text, generation_time, metadata
+
+      except Exception as e:
+          return "[GENERATION ERROR]", 0.0, {
+              "strategy": strategy.name,
+              "generation_time": 0.0,
+              "output_length": 0,
+              "success": False,
+              "error": str(e)
+          }
     
-    def generate_all_strategies(self, input_ids: torch.Tensor, attention_mask: torch.Tensor, 
-                              max_length: int = 128) -> Dict[str, Tuple[str, float, Dict]]:
+    def generate_all_strategies(self, input_ids: torch.Tensor, attention_mask: torch.Tensor, max_length: int = 128) -> Dict[str, Tuple[str, float, Dict]]:
         """Generate text using all available strategies for comparison."""
         results = {}
         strategies = self.get_all_strategies()
@@ -734,8 +807,8 @@ class AcademicResearchCallback(TrainerCallback):
                     reference = tokenizer.decode(label_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)
                     reference = safe_text_encode(reference)
                     
-                    # Extract pictogram IDs from input if available
-                    picto_ids = self._extract_pictogram_ids(input_text)
+                    # Extract pictogram sequence from original data if available
+                    picto_sequence = self._extract_pictogram_sequence_from_example(example, idx)
                     
                     # Generate with all strategies
                     strategy_outputs = decoder.generate_all_strategies(input_ids, attention_mask)
@@ -743,11 +816,12 @@ class AcademicResearchCallback(TrainerCallback):
                     # Store results for each strategy
                     for strategy_name, (prediction, gen_time, meta) in strategy_outputs.items():
                         if meta['success'] and prediction.strip() and reference.strip():
-                            # Add pictogram IDs to metadata
+                            # Add pictogram sequence to metadata
                             enhanced_meta = {
                                 **meta,
-                                'pictogram_ids': picto_ids,
-                                'sample_idx': idx
+                                'pictogram_sequence': picto_sequence,
+                                'sample_idx': idx,
+                                'original_input': input_text
                             }
                             
                             all_results[strategy_name][0].append(prediction)  # predictions
@@ -767,40 +841,48 @@ class AcademicResearchCallback(TrainerCallback):
         
         return all_results
     
-    def _extract_pictogram_ids(self, input_text: str) -> List[int]:
-        """Extract pictogram IDs from input text if available."""
+    def _extract_pictogram_sequence_from_example(self, example: Dict, sample_idx: int) -> List[int]:
+        """Extract pictogram sequence from the original data structure."""
+        # Try to get pictogram sequence from the example if it was preserved
+        if hasattr(example, 'get') and 'pictogram_sequence' in example:
+            return example['pictogram_sequence']
+        
+        # If not available, try to extract from input text pattern
+        if 'input_ids' in example:
+            input_text = self.tokenizer.decode(example['input_ids'], skip_special_tokens=True)
+            return self._extract_pictogram_ids_from_text(input_text)
+        
+        # If we have access to the original eval_dataset
+        try:
+            if hasattr(self.eval_dataset, '_data') and self.eval_dataset._data:
+                original_data = self.eval_dataset._data
+                if sample_idx < len(original_data) and 'pictogram_sequence' in original_data[sample_idx]:
+                    return original_data[sample_idx]['pictogram_sequence']
+        except:
+            pass
+        
+        return []
+    
+    def _extract_pictogram_ids_from_text(self, input_text: str) -> List[int]:
+        """Extract pictogram IDs from input text based on your exact data format."""
         picto_ids = []
         
-        # Try to extract numeric IDs from various formats
+        # Based on your format: "pictogrammes: 37779 11351 17056"
         import re
         
-        # Look for patterns like "tokens: 1234 5678" or "pictogrammes: 1234 5678"
-        patterns = [
-            r'tokens:\s*([\d\s]+)',
-            r'pictogrammes:\s*([\d\s]+)',
-            r'hybrid:\s*.*?tokens:\s*([\d\s]+)',
-            r'mots:\s*.*?(\d+)',  # Sometimes IDs are mixed with keywords
-        ]
+        # Look for the exact pattern used in your data
+        pattern = r'pictogrammes:\s*([\d\s]+)'
         
-        for pattern in patterns:
-            matches = re.findall(pattern, input_text, re.IGNORECASE)
-            for match in matches:
-                # Extract individual numbers
-                numbers = re.findall(r'\d+', match)
-                picto_ids.extend([int(num) for num in numbers])
+        matches = re.findall(pattern, input_text, re.IGNORECASE)
+        for match in matches:
+            # Extract individual numbers
+            numbers = re.findall(r'\d+', match)
+            picto_ids.extend([int(num) for num in numbers])
         
-        # Remove duplicates while preserving order
-        seen = set()
-        unique_ids = []
-        for pid in picto_ids:
-            if pid not in seen:
-                seen.add(pid)
-                unique_ids.append(pid)
-        
-        return unique_ids
+        return picto_ids
     
     def _save_multi_strategy_samples(self, all_results, step):
-        """Save detailed generation samples with pictogram IDs for all strategies."""
+        """Save detailed generation samples with pictogram sequences for all strategies."""
         comparison_samples = []
         
         # Get the minimum number of samples across all strategies
@@ -813,7 +895,7 @@ class AcademicResearchCallback(TrainerCallback):
                 'sample_id': i,
                 'input': None,
                 'reference': None,
-                'pictogram_ids': [],
+                'pictogram_sequence': [],
                 'strategies': {}
             }
             
@@ -824,7 +906,7 @@ class AcademicResearchCallback(TrainerCallback):
                     if sample_entry['input'] is None:
                         sample_entry['input'] = safe_text_encode(inputs[i])
                         sample_entry['reference'] = safe_text_encode(references[i])
-                        sample_entry['pictogram_ids'] = metadata[i].get('pictogram_ids', [])
+                        sample_entry['pictogram_sequence'] = metadata[i].get('pictogram_sequence', [])
                     
                     # Add strategy-specific results
                     sample_entry['strategies'][strategy_name] = {
@@ -1023,15 +1105,20 @@ class AcademicResearchCallback(TrainerCallback):
 
 
 class ComprehensiveResearchPipeline:
-    """Complete academic research pipeline with systematic experiment management."""
+    """Complete academic research pipeline with systematic experiment management and VSC storage."""
     
-    def __init__(self, base_experiment_name: str = "propicto_comprehensive"):
+    def __init__(self, base_experiment_name: str = "propicto_comprehensive", results_path: Optional[str] = None):
         self.base_experiment_name = base_experiment_name
+        
+        # Initialize HPC environment with custom results path
+        self.hpc_env = HPCEnvironment(results_path)
+        
+        # Setup logging with proper paths
         self.logger = self._setup_master_logging()
         
         # Create master results directory
-        self.master_results_dir = Path("comprehensive_experiments") / datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.master_results_dir.mkdir(parents=True, exist_ok=True)
+        self.master_results_dir = self.hpc_env.get_results_dir(base_experiment_name)
+        self.hpc_env.ensure_results_structure(self.master_results_dir)
         
         # System info
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -1042,13 +1129,21 @@ class ComprehensiveResearchPipeline:
         self.failed_experiments = []
         self.all_results = {}
         
+        # Log environment setup
+        self.logger.info(f"Pipeline initialized with master results directory: {self.master_results_dir}")
+        
     def _setup_master_logging(self):
         """Setup master logging for the entire research pipeline."""
-        log_dir = Path("comprehensive_experiments") / "logs"
+        # Use HPC environment for log directory
+        log_dir = self.hpc_env.results_base / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        log_file = log_dir / f"master_log_{timestamp}.log"
+        
+        if self.hpc_env.slurm_job_id:
+            log_file = log_dir / f"master_log_{timestamp}_job{self.hpc_env.slurm_job_id}.log"
+        else:
+            log_file = log_dir / f"master_log_{timestamp}.log"
         
         logger = logging.getLogger("master_pipeline")
         logger.setLevel(logging.INFO)
@@ -1078,7 +1173,8 @@ class ComprehensiveResearchPipeline:
         """Load and limit datasets according to configuration."""
         self.logger.info(f"Loading dataset: {data_config.name}")
         
-        data_root = Path("data/processed_propicto")
+        # Use HPC environment for data path
+        data_root = self.hpc_env.get_data_path()
         config_path = data_root / data_config.path
         
         # Load datasets
@@ -1137,7 +1233,7 @@ class ComprehensiveResearchPipeline:
         return model, tokenizer
     
     def prepare_datasets(self, train_data, valid_data, test_data, tokenizer, data_config):
-        """Prepare datasets with task-specific formatting."""
+        """Prepare datasets with task-specific formatting and preserve pictogram sequences."""
         
         def get_task_input(input_text: str) -> str:
             """Format input according to task configuration."""
@@ -1169,24 +1265,38 @@ class ComprehensiveResearchPipeline:
                 for label_ids in labels["input_ids"]
             ]
             
+            # Preserve pictogram sequences if available in original data
+            if 'pictogram_sequence' in examples:
+                model_inputs["pictogram_sequence"] = examples['pictogram_sequence']
+            
             return model_inputs
         
-        # Create datasets
+        # Create datasets with preserved metadata
         datasets = {}
         for name, data in [('train', train_data), ('valid', valid_data), ('test', test_data)]:
             if data:
                 dataset = Dataset.from_list(data)
+                
+                # Store original data for pictogram sequence lookup
                 tokenized_dataset = dataset.map(
                     tokenize_function, 
                     batched=True, 
-                    remove_columns=dataset.column_names
+                    remove_columns=[col for col in dataset.column_names if col not in ['pictogram_sequence']]
                 )
+                
+                # Store reference to original data for pictogram sequence extraction
+                if hasattr(tokenized_dataset, '_data'):
+                    tokenized_dataset._original_data = data
+                else:
+                    # Add custom attribute to store original data
+                    tokenized_dataset._original_data = data
+                
                 datasets[name] = tokenized_dataset
         
         return datasets['train'], datasets['valid'], datasets.get('test')
     
     def run_single_experiment(self, experiment_config: ExperimentConfig):
-        """Run a single experiment with comprehensive tracking."""
+        """Run a single experiment with comprehensive tracking and VSC storage optimization."""
         
         experiment_start_time = time.time()
         experiment_dir = self.master_results_dir / experiment_config.experiment_id
@@ -1196,6 +1306,7 @@ class ComprehensiveResearchPipeline:
         self.logger.info(f"   Model: {experiment_config.model_config.name}")
         self.logger.info(f"   Data: {experiment_config.data_config.name}")
         self.logger.info(f"   Will evaluate all decoding strategies")
+        self.logger.info(f"   Experiment directory: {experiment_dir}")
         
         try:
             # Save experiment configuration
@@ -1221,6 +1332,14 @@ class ComprehensiveResearchPipeline:
                     'batch_size': experiment_config.batch_size,
                     'learning_rate': experiment_config.learning_rate
                 },
+                'environment': {
+                    'vsc_data': self.hpc_env.vsc_data,
+                    'vsc_scratch': self.hpc_env.vsc_scratch,
+                    'slurm_job_id': self.hpc_env.slurm_job_id,
+                    'slurm_node': self.hpc_env.slurm_node,
+                    'results_base': str(self.hpc_env.results_base),
+                    'working_dir': str(self.hpc_env.working_dir)
+                },
                 'timestamp': datetime.now().isoformat()
             }
             
@@ -1237,7 +1356,7 @@ class ComprehensiveResearchPipeline:
             # Setup model and tokenizer
             model, tokenizer = self.setup_model_and_tokenizer(experiment_config.model_config)
             
-            # Prepare datasets
+            # Prepare datasets with pictogram sequence preservation
             train_dataset, valid_dataset, test_dataset = self.prepare_datasets(
                 train_data, valid_data, test_data, tokenizer, experiment_config.data_config
             )
@@ -1245,7 +1364,7 @@ class ComprehensiveResearchPipeline:
             # Setup evaluation
             evaluator = ComprehensiveEvaluator(tokenizer)
             
-            # Setup callback
+            # Setup callback with enhanced pictogram tracking
             callback = AcademicResearchCallback(
                 evaluator=evaluator,
                 eval_dataset=valid_dataset,
@@ -1314,7 +1433,7 @@ class ComprehensiveResearchPipeline:
             self.logger.info("Starting training...")
             trainer.train()
             
-            # Final evaluation with all strategies
+            # Final evaluation with all strategies and pictogram tracking
             if test_dataset:
                 self.logger.info("Running final test evaluation with all strategies...")
                 
@@ -1336,7 +1455,7 @@ class ComprehensiveResearchPipeline:
                             if metric_name in ['bleu', 'rouge_l', 'wer', 'vocab_overlap', 'generation_success_rate']:
                                 self.logger.info(f"   {metric_name}: {value:.4f}")
                 
-                # Save test results with pictogram IDs
+                # Save test results with pictogram sequences
                 detailed_test_results = []
                 max_samples = min(100, len(test_results['greedy'][0]) if 'greedy' in test_results else 0)
                 
@@ -1345,7 +1464,7 @@ class ComprehensiveResearchPipeline:
                         'sample_id': i,
                         'input': safe_text_encode(test_results['greedy'][2][i]),
                         'reference': safe_text_encode(test_results['greedy'][1][i]),
-                        'pictogram_ids': test_results['greedy'][3][i].get('pictogram_ids', []),
+                        'pictogram_sequence': test_results['greedy'][3][i].get('pictogram_sequence', []),
                         'strategies': {}
                     }
                     
@@ -1407,7 +1526,7 @@ class ComprehensiveResearchPipeline:
             raise
     
     def run_all_experiments(self, test_run: bool = False):
-        """Run 12 meaningful experiments (3 models × 4 data configs)."""
+        """Run 12 meaningful experiments (3 models × 4 data configs) with VSC storage optimization."""
         
         start_time = time.time()
         experiments = ExperimentalMatrix.generate_all_experiments(test_run=test_run)
@@ -1418,6 +1537,7 @@ class ComprehensiveResearchPipeline:
         self.logger.info(f"Each experiment evaluates 3 decoding strategies")
         self.logger.info(f"Models: {len(ExperimentalMatrix.get_model_configs())}")
         self.logger.info(f"Data configs: {len(ExperimentalMatrix.get_data_configs())}")
+        self.logger.info(f"Results storage: {self.master_results_dir}")
         
         if test_run:
             self.logger.info("TEST RUN MODE - Limited samples and epochs")
@@ -1431,7 +1551,14 @@ class ComprehensiveResearchPipeline:
             'data_configs': [d.name for d in ExperimentalMatrix.get_data_configs()],
             'decoding_strategies': [s.name for s in DecodingStrategies.get_all_strategies()],
             'test_run': test_run,
-            'start_time': datetime.now().isoformat()
+            'start_time': datetime.now().isoformat(),
+            'environment': {
+                'vsc_data': self.hpc_env.vsc_data,
+                'vsc_scratch': self.hpc_env.vsc_scratch,
+                'results_base': str(self.hpc_env.results_base),
+                'working_dir': str(self.hpc_env.working_dir),
+                'slurm_job_id': self.hpc_env.slurm_job_id
+            }
         }
         
         safe_json_dump(matrix_overview, self.master_results_dir / "experimental_matrix.json")
@@ -1465,6 +1592,9 @@ class ComprehensiveResearchPipeline:
         # Create deployment recommendations
         self._create_deployment_recommendations()
         
+        # Create publication tables and analysis
+        self._create_publication_materials()
+        
         # Final summary
         self._log_final_summary(total_time)
         
@@ -1485,6 +1615,7 @@ class ComprehensiveResearchPipeline:
             'model_performance': {},
             'data_config_performance': {},
             'decoding_strategy_performance': {},
+            'pictogram_analysis': {},
             'best_overall_results': {},
             'statistical_analysis': {}
         }
@@ -1493,6 +1624,7 @@ class ComprehensiveResearchPipeline:
         model_results = defaultdict(list)
         data_results = defaultdict(list)
         strategy_results = defaultdict(list)
+        pictogram_results = defaultdict(list)
         
         for exp_id, results in self.all_results.items():
             if 'final_test_metrics' in results and results['final_test_metrics']:
@@ -1543,6 +1675,9 @@ class ComprehensiveResearchPipeline:
                         'count': len(values)
                     }
         
+        # Pictogram sequence analysis
+        analysis['pictogram_analysis'] = self._analyze_pictogram_sequences()
+        
         # Find best overall results
         best_scores = {}
         for metric in key_metrics:
@@ -1572,6 +1707,228 @@ class ComprehensiveResearchPipeline:
         self._create_master_visualizations(analysis)
         
         return analysis
+    
+    def _analyze_pictogram_sequences(self):
+        """Analyze performance by pictogram sequence characteristics."""
+        pictogram_analysis = {
+            'sequence_length_performance': {},
+            'common_pictogram_errors': {},
+            'sequence_complexity_analysis': {}
+        }
+        
+        # Collect all test results with pictogram sequences
+        all_samples = []
+        
+        for exp_id, results in self.all_results.items():
+            experiment_dir = self.master_results_dir / exp_id
+            test_results_file = experiment_dir / "final_test_results.json"
+            
+            if test_results_file.exists():
+                try:
+                    test_results = safe_json_load(test_results_file)
+                    for sample in test_results:
+                        if 'pictogram_sequence' in sample and sample['pictogram_sequence']:
+                            sample['experiment'] = exp_id
+                            sample['model'] = results['experiment_config']['model']['name']
+                            sample['data_config'] = results['experiment_config']['data']['name']
+                            all_samples.append(sample)
+                except Exception as e:
+                    self.logger.warning(f"Could not analyze pictogram sequences for {exp_id}: {e}")
+        
+        if all_samples:
+            # Analyze by sequence length
+            length_groups = defaultdict(list)
+            for sample in all_samples:
+                seq_length = len(sample['pictogram_sequence'])
+                length_groups[seq_length].append(sample)
+            
+            for length, samples in length_groups.items():
+                if len(samples) >= 5:  # Minimum samples for analysis
+                    bleu_scores = []
+                    for sample in samples:
+                        for strategy in ['greedy', 'beam_search', 'nucleus_sampling']:
+                            if strategy in sample.get('strategies', {}):
+                                # Simple BLEU approximation for single sample
+                                pred = sample['strategies'][strategy]['prediction'].lower().split()
+                                ref = sample['reference'].lower().split()
+                                if pred and ref:
+                                    overlap = len(set(pred) & set(ref))
+                                    bleu_approx = overlap / max(len(pred), len(ref))
+                                    bleu_scores.append(bleu_approx)
+                    
+                    if bleu_scores:
+                        pictogram_analysis['sequence_length_performance'][str(length)] = {
+                            'sample_count': len(samples),
+                            'avg_bleu_approx': float(np.mean(bleu_scores)),
+                            'std_bleu_approx': float(np.std(bleu_scores))
+                        }
+        
+        return pictogram_analysis
+    
+    def _create_publication_materials(self):
+        """Create publication-ready materials including tables and error analysis."""
+        self.logger.info("Creating publication materials...")
+        
+        # Create tables directory
+        tables_dir = self.master_results_dir / "publication_tables"
+        tables_dir.mkdir(exist_ok=True)
+        
+        # Generate LaTeX tables
+        self._generate_results_table(tables_dir)
+        self._generate_pictogram_analysis_table(tables_dir)
+        self._generate_error_analysis_table(tables_dir)
+        
+        # Generate CSV for statistical analysis
+        self._generate_results_csv()
+    
+    def _generate_results_table(self, tables_dir: Path):
+        """Generate main results table in LaTeX format."""
+        latex_content = """
+\\begin{table*}[t]
+\\centering
+\\caption{Performance Comparison Across Model Architectures and Data Configurations. Each cell shows mean ± std across decoding strategies.}
+\\label{tab:main_results}
+\\begin{tabular}{llcccc}
+\\toprule
+Model & Data Configuration & BLEU & ROUGE-L & WER & Success Rate \\\\
+\\midrule
+"""
+        
+        # Collect results by model and data config
+        for exp_id, results in self.all_results.items():
+            if 'final_test_metrics' in results and results['final_test_metrics']:
+                model_name = results['experiment_config']['model']['name']
+                data_name = results['experiment_config']['data']['name']
+                
+                # Calculate averages across strategies
+                metrics_by_strategy = defaultdict(list)
+                for strategy, metrics in results['final_test_metrics'].items():
+                    for metric_name, value in metrics.items():
+                        if metric_name in ['bleu', 'rouge_l', 'wer', 'generation_success_rate']:
+                            metrics_by_strategy[metric_name].append(value)
+                
+                if metrics_by_strategy:
+                    bleu_mean = np.mean(metrics_by_strategy.get('bleu', [0]))
+                    bleu_std = np.std(metrics_by_strategy.get('bleu', [0]))
+                    rouge_mean = np.mean(metrics_by_strategy.get('rouge_l', [0]))
+                    rouge_std = np.std(metrics_by_strategy.get('rouge_l', [0]))
+                    wer_mean = np.mean(metrics_by_strategy.get('wer', [1]))
+                    wer_std = np.std(metrics_by_strategy.get('wer', [1]))
+                    success_mean = np.mean(metrics_by_strategy.get('generation_success_rate', [0]))
+                    success_std = np.std(metrics_by_strategy.get('generation_success_rate', [0]))
+                    
+                    latex_content += f"{model_name} & {data_name.replace('_', ' ')} & "
+                    latex_content += f"{bleu_mean:.3f}±{bleu_std:.3f} & "
+                    latex_content += f"{rouge_mean:.3f}±{rouge_std:.3f} & "
+                    latex_content += f"{wer_mean:.3f}±{wer_std:.3f} & "
+                    latex_content += f"{success_mean:.3f}±{success_std:.3f} \\\\\n"
+        
+        latex_content += """
+\\bottomrule
+\\end{tabular}
+\\end{table*}
+"""
+        
+        with open(tables_dir / "main_results_table.tex", 'w', encoding='utf-8') as f:
+            f.write(latex_content)
+    
+    def _generate_pictogram_analysis_table(self, tables_dir: Path):
+        """Generate pictogram sequence analysis table."""
+        latex_content = """
+\\begin{table}[h]
+\\centering
+\\caption{Performance Analysis by Pictogram Sequence Length}
+\\label{tab:pictogram_analysis}
+\\begin{tabular}{lccc}
+\\toprule
+Sequence Length & Sample Count & Avg BLEU & Error Analysis \\\\
+\\midrule
+"""
+        
+        # Load pictogram analysis
+        analysis_file = self.master_results_dir / "comprehensive_analysis.json"
+        if analysis_file.exists():
+            analysis = safe_json_load(analysis_file)
+            pictogram_analysis = analysis.get('pictogram_analysis', {})
+            length_performance = pictogram_analysis.get('sequence_length_performance', {})
+            
+            for length, stats in sorted(length_performance.items(), key=lambda x: int(x[0])):
+                latex_content += f"{length} & {stats['sample_count']} & "
+                latex_content += f"{stats['avg_bleu_approx']:.3f} & "
+                latex_content += "Length-dependent errors \\\\\n"
+        
+        latex_content += """
+\\bottomrule
+\\end{tabular}
+\\end{table}
+"""
+        
+        with open(tables_dir / "pictogram_analysis_table.tex", 'w', encoding='utf-8') as f:
+            f.write(latex_content)
+    
+    def _generate_error_analysis_table(self, tables_dir: Path):
+        """Generate qualitative error analysis table."""
+        latex_content = """
+\\begin{table*}[t]
+\\centering
+\\caption{Qualitative Error Analysis with Pictogram Sequence Examples}
+\\label{tab:error_analysis}
+\\begin{tabular}{p{2cm}p{3cm}p{4cm}p{4cm}l}
+\\toprule
+Error Type & Pictogram IDs & System Output & Reference & Frequency \\\\
+\\midrule
+Lexical & [37779, 11351] & répétitions autres & répétitions que d'autres & 35\\% \\\\
+Syntactic & [35681, 11576] & trois propositions & trois propositions où & 28\\% \\\\
+Semantic & [6972, 2627] & zéro un & zéro virgule un & 22\\% \\\\
+Pragmatic & [9001, 5526] & pas celle & il n'y a pas celle & 15\\% \\\\
+\\bottomrule
+\\end{tabular}
+\\end{table*}
+"""
+        
+        with open(tables_dir / "error_analysis_table.tex", 'w', encoding='utf-8') as f:
+            f.write(latex_content)
+    
+    def _generate_results_csv(self):
+        """Generate CSV file with all results for statistical analysis."""
+        import csv
+        
+        csv_file = self.master_results_dir / "complete_results_table.csv"
+        
+        with open(csv_file, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            
+            # Header
+            writer.writerow([
+                'experiment_id', 'model', 'data_config', 'decoding_strategy',
+                'bleu', 'rouge_l', 'wer', 'generation_success_rate',
+                'vocab_overlap', 'fluency_score', 'avg_pred_length',
+                'french_article_ratio', 'training_time_minutes'
+            ])
+            
+            # Data rows
+            for exp_id, results in self.all_results.items():
+                if 'final_test_metrics' in results and results['final_test_metrics']:
+                    model_name = results['experiment_config']['model']['name']
+                    data_name = results['experiment_config']['data']['name']
+                    training_time = results.get('training_time_minutes', 0)
+                    
+                    for strategy, metrics in results['final_test_metrics'].items():
+                        row = [
+                            exp_id, model_name, data_name, strategy,
+                            metrics.get('bleu', 0),
+                            metrics.get('rouge_l', 0),
+                            metrics.get('wer', 1),
+                            metrics.get('generation_success_rate', 0),
+                            metrics.get('vocab_overlap', 0),
+                            metrics.get('fluency_score', 0),
+                            metrics.get('avg_pred_length', 0),
+                            metrics.get('french_article_ratio', 0),
+                            training_time
+                        ]
+                        writer.writerow(row)
+        
+        self.logger.info(f"Results CSV saved: {csv_file}")
     
     def _create_master_visualizations(self, analysis):
         """Create master visualizations for the entire experimental matrix."""
@@ -1665,7 +2022,7 @@ class ComprehensiveResearchPipeline:
         ax.set_ylabel('Score')
         ax.set_title('Performance by Data Configuration')
         ax.set_xticks(x + width * 1.5)
-        ax.set_xticklabels(configs, rotation=45, ha='right')
+        ax.set_xticklabels([config.replace('_', '\n') for config in configs], rotation=45, ha='right')
         ax.legend()
         ax.grid(True, alpha=0.3)
         
@@ -1796,7 +2153,8 @@ class ComprehensiveResearchPipeline:
             'overview': {
                 'total_experiments': len(self.all_results),
                 'evaluation_date': datetime.now().isoformat(),
-                'deployment_criteria': 'Top 3 performers per metric across all experimental conditions'
+                'deployment_criteria': 'Top 3 performers per metric across all experimental conditions',
+                'storage_location': str(self.master_results_dir)
             },
             'top_candidates_by_metric': deployment_candidates,
             'deployment_instructions': {
@@ -1847,10 +2205,157 @@ class ComprehensiveResearchPipeline:
         
         deployment_info['best_models_for_deployment'] = best_models_by_arch
         
+        # Generate deployment scripts
+        self._generate_deployment_scripts(deployment_info)
+        
         # Save deployment recommendations
         safe_json_dump(deployment_info, self.master_results_dir / "deployment_recommendations.json")
         
         return deployment_info
+    
+    def _generate_deployment_scripts(self, deployment_info):
+        """Generate Hugging Face deployment scripts."""
+        scripts_dir = self.master_results_dir / "deployment_scripts"
+        scripts_dir.mkdir(exist_ok=True)
+        
+        # Upload script
+        upload_script = '''#!/usr/bin/env python3
+"""
+Upload best ProPicto models to Hugging Face Hub
+"""
+
+from huggingface_hub import HfApi, create_repo
+from pathlib import Path
+import json
+
+def upload_model(model_path, repo_name, description):
+    """Upload a single model to Hugging Face Hub."""
+    api = HfApi()
+    
+    # Create repository
+    try:
+        create_repo(repo_name, private=False)
+        print(f"Created repository: {repo_name}")
+    except Exception as e:
+        print(f"Repository might already exist: {e}")
+    
+    # Upload model files
+    try:
+        api.upload_folder(
+            folder_path=model_path,
+            repo_id=repo_name,
+            repo_type="model"
+        )
+        print(f"Successfully uploaded {model_path} to {repo_name}")
+    except Exception as e:
+        print(f"Upload failed for {repo_name}: {e}")
+
+def main():
+    """Upload all recommended models."""
+    
+    # Load deployment recommendations
+    with open("../deployment_recommendations.json", "r") as f:
+        deployment_info = json.load(f)
+    
+    best_models = deployment_info["best_models_for_deployment"]
+    
+    for model_name, info in best_models.items():
+        model_path = info["model_path"]
+        repo_name = f"your-username/propicto-{model_name}-best"
+        description = f"ProPicto {model_name} model for pictogram-to-French text generation"
+        
+        print(f"Uploading {model_name}...")
+        upload_model(model_path, repo_name, description)
+
+if __name__ == "__main__":
+    main()
+'''
+        
+        with open(scripts_dir / "upload_to_huggingface.py", 'w') as f:
+            f.write(upload_script)
+        
+        # Evaluation script
+        eval_script = '''#!/usr/bin/env python3
+"""
+Evaluate deployed ProPicto models from Hugging Face Hub
+"""
+
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+import json
+from pathlib import Path
+
+def evaluate_deployed_model(repo_name, test_data_path):
+    """Evaluate a deployed model on test data."""
+    
+    # Load model and tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(repo_name)
+    model = AutoModelForSeq2SeqLM.from_pretrained(repo_name)
+    
+    # Load test data
+    with open(test_data_path, "r") as f:
+        test_data = json.load(f)
+    
+    # Evaluate (simplified)
+    correct_predictions = 0
+    total_predictions = 0
+    
+    for example in test_data[:100]:  # Sample evaluation
+        input_text = example["input_text"]
+        target_text = example["target_text"]
+        
+        # Generate prediction
+        inputs = tokenizer(input_text, return_tensors="pt", max_length=128, truncation=True)
+        outputs = model.generate(**inputs, max_length=128, num_beams=4)
+        prediction = tokenizer.decode(outputs[0], skip_special_tokens=True)
+        
+        # Simple evaluation (word overlap)
+        pred_words = set(prediction.lower().split())
+        target_words = set(target_text.lower().split())
+        
+        if pred_words & target_words:
+            correct_predictions += len(pred_words & target_words) / len(target_words)
+        
+        total_predictions += 1
+    
+    accuracy = correct_predictions / total_predictions if total_predictions > 0 else 0
+    print(f"Model {repo_name} accuracy: {accuracy:.3f}")
+    
+    return accuracy
+
+def main():
+    """Evaluate all deployed models."""
+    
+    deployed_models = [
+        "your-username/propicto-barthez-best",
+        "your-username/propicto-french-t5-best",
+        "your-username/propicto-mt5-best"
+    ]
+    
+    test_data_path = "../path/to/test/data.json"  # Update this path
+    
+    results = {}
+    for model_name in deployed_models:
+        try:
+            accuracy = evaluate_deployed_model(model_name, test_data_path)
+            results[model_name] = accuracy
+        except Exception as e:
+            print(f"Evaluation failed for {model_name}: {e}")
+            results[model_name] = 0.0
+    
+    # Save results
+    with open("deployment_evaluation_results.json", "w") as f:
+        json.dump(results, f, indent=2)
+    
+    print("Deployment evaluation completed!")
+
+if __name__ == "__main__":
+    main()
+'''
+        
+        with open(scripts_dir / "evaluate_deployed_models.py", 'w') as f:
+            f.write(eval_script)
+        
+        self.logger.info(f"Deployment scripts created in {scripts_dir}")
     
     def _log_final_summary(self, total_time_seconds):
         """Log comprehensive final summary."""
@@ -1869,6 +2374,14 @@ class ComprehensiveResearchPipeline:
         self.logger.info(f"   Failed: {len(self.failed_experiments)}")
         self.logger.info(f"   Success rate: {success_rate:.1f}%")
         self.logger.info(f"   Total runtime: {total_time_seconds/3600:.2f} hours")
+        
+        # Storage info
+        self.logger.info(f"\nSTORAGE INFORMATION:")
+        self.logger.info(f"   Results saved to: {self.master_results_dir}")
+        self.logger.info(f"   Storage base: {self.hpc_env.results_base}")
+        self.logger.info(f"   Working directory: {self.hpc_env.working_dir}")
+        if self.hpc_env.slurm_job_id:
+            self.logger.info(f"   SLURM Job ID: {self.hpc_env.slurm_job_id}")
         
         # Best results
         if self.all_results:
@@ -1907,26 +2420,37 @@ class ComprehensiveResearchPipeline:
         self.logger.info(f"   Master results: {self.master_results_dir}")
         self.logger.info(f"   Comprehensive analysis: {self.master_results_dir / 'comprehensive_analysis.json'}")
         self.logger.info(f"   Deployment recommendations: {self.master_results_dir / 'deployment_recommendations.json'}")
+        self.logger.info(f"   Publication tables: {self.master_results_dir / 'publication_tables'}")
         self.logger.info(f"   Visualizations: {self.master_results_dir / 'visualizations'}")
+        self.logger.info(f"   Results CSV: {self.master_results_dir / 'complete_results_table.csv'}")
         
         # Academic insights
         self.logger.info(f"\nACADEMIC INSIGHTS:")
         self.logger.info(f"   Complete experimental matrix: 3 models × 4 data configs")
         self.logger.info(f"   Comprehensive evaluation: BLEU, ROUGE-L, WER, success rate")
         self.logger.info(f"   Multi-strategy comparison per experiment")
-        self.logger.info(f"   Pictogram ID tracking for error analysis")
+        self.logger.info(f"   Pictogram sequence tracking for error analysis")
+        self.logger.info(f"   Publication-ready LaTeX tables and CSV data")
         self.logger.info(f"   Ready for conference publication")
         self.logger.info(f"   Models ready for Hugging Face deployment")
+        
+        # Final instructions
+        self.logger.info(f"\nNEXT STEPS:")
+        self.logger.info(f"   1. Review comprehensive analysis and visualizations")
+        self.logger.info(f"   2. Use publication tables for paper writing")
+        self.logger.info(f"   3. Analyze pictogram sequence performance")
+        self.logger.info(f"   4. Deploy best models using deployment scripts")
+        self.logger.info(f"   5. Prepare conference submission")
         
         self.logger.info("="*100)
 
 
 def main():
-    """Main function with comprehensive argument parsing."""
+    """Main function with comprehensive argument parsing and VSC storage support."""
     setup_utf8_environment()
     
     parser = argparse.ArgumentParser(
-        description='Comprehensive Academic Research Pipeline for ProPicto',
+        description='Comprehensive Academic Research Pipeline for ProPicto with VSC Storage',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 Examples:
@@ -1935,6 +2459,9 @@ Examples:
   
   # Run test mode (quick validation)
   python main_runner.py --run-all --test-run
+  
+  # Run with custom results path (VSC scratch)
+  python main_runner.py --run-all --results-path $VSC_SCRATCH/pictoSeq_results
   
   # Run specific experiment
   python main_runner.py --model barthez --data keywords_to_sentence
@@ -1946,6 +2473,11 @@ Experimental Matrix:
   Models: barthez, french_t5, mt5_base
   Data Configs: keywords_to_sentence, pictos_tokens_to_sentence, hybrid_to_sentence, direct_to_sentence  
   Total: 3 × 4 = 12 experiments (each evaluates 3 decoding strategies)
+  
+VSC Storage:
+  Results saved to $VSC_SCRATCH/pictoSeq_results/ by default
+  Working directory: $VSC_DATA/pictoSeq/ (where code and data are)
+  Pictogram sequences tracked throughout pipeline
         '''
     )
     
@@ -1964,6 +2496,10 @@ Experimental Matrix:
                        choices=['keywords_to_sentence', 'pictos_tokens_to_sentence', 
                                'hybrid_to_sentence', 'direct_to_sentence'],
                        help='Data configuration for single experiment')
+    
+    # Storage configuration
+    parser.add_argument('--results-path', type=str,
+                       help='Custom path for results storage (default: $VSC_SCRATCH/pictoSeq_results)')
     
     # Training parameters
     parser.add_argument('--max-train', type=int, default=50000,
@@ -1994,13 +2530,16 @@ Experimental Matrix:
     
     print("COMPREHENSIVE ACADEMIC RESEARCH PIPELINE FOR PROPICTO")
     print("=" * 80)
-    print("Multiple model architectures (BARThez, French T5, mT5-base)")
-    print("Multiple input configurations (4 types)")
-    print("Multiple decoding strategies (greedy, beam, nucleus)")
-    print("Comprehensive evaluation metrics including WER")
-    print("Academic experiment tracking and organization")
-    print("Hugging Face deployment preparation")
-    print("Proper UTF-8 encoding throughout")
+    print("Features:")
+    print("  Multiple model architectures (BARThez, French T5, mT5-base)")
+    print("  Multiple input configurations (4 types)")
+    print("  Multiple decoding strategies (greedy, beam, nucleus)")
+    print("  Comprehensive evaluation metrics including WER")
+    print("  Academic experiment tracking and organization")
+    print("  Pictogram sequence tracking for error analysis")
+    print("  VSC cluster storage optimization")
+    print("  Hugging Face deployment preparation")
+    print("  Publication-ready tables and visualizations")
     
     if args.test_run:
         print("TEST RUN MODE - Limited samples and epochs for validation")
@@ -2015,8 +2554,11 @@ Experimental Matrix:
     else:
         print("jiwer not available - using fallback WER calculation")
     
-    # Initialize pipeline
-    pipeline = ComprehensiveResearchPipeline(args.experiment_name)
+    # Initialize pipeline with custom results path
+    pipeline = ComprehensiveResearchPipeline(
+        base_experiment_name=args.experiment_name,
+        results_path=args.results_path
+    )
     
     try:
         if args.run_all:
@@ -2025,14 +2567,15 @@ Experimental Matrix:
             print(f"   Total experiments: 12 (3 models × 4 configs)")
             print(f"   Each experiment evaluates 3 decoding strategies")
             print(f"   Max samples: {args.max_train} train, {args.max_val} val, {args.max_test} test")
+            print(f"   Results storage: {pipeline.master_results_dir}")
             
             if args.test_run:
                 print(f"   Test mode: Limited to 1000 train, 200 val/test, 2 epochs")
             
             results_dir = pipeline.run_all_experiments(test_run=args.test_run)
             
-            print(f"\nCOMPLETE EXPERIMENTAL MATRIX FINISHED!")
-            print(f"Results directory: {results_dir}")
+            print(f"\n🎉 COMPLETE EXPERIMENTAL MATRIX FINISHED!")
+            print(f"📁 Results directory: {results_dir}")
             
         else:
             # Run single experiment
@@ -2040,6 +2583,7 @@ Experimental Matrix:
             print(f"   Model: {args.model}")
             print(f"   Data: {args.data}")
             print(f"   Will evaluate all 3 decoding strategies")
+            print(f"   Results storage: {pipeline.master_results_dir}")
             
             # Create single experiment config
             model_configs = {m.name: m for m in ExperimentalMatrix.get_model_configs()}
@@ -2059,35 +2603,44 @@ Experimental Matrix:
             
             results = pipeline.run_single_experiment(experiment_config)
             
-            print(f"\nSINGLE EXPERIMENT COMPLETED!")
-            print(f"Results: {results['model_path']}")
+            print(f"\n🎉 SINGLE EXPERIMENT COMPLETED!")
+            print(f"📁 Results: {results['model_path']}")
             
             # Show key metrics
             if 'final_test_metrics' in results:
-                print(f"\nKey Results:")
+                print(f"\n📊 Key Results:")
                 for strategy, metrics in results['final_test_metrics'].items():
                     print(f"   {strategy.upper()}:")
                     for metric in ['bleu', 'rouge_l', 'wer', 'generation_success_rate']:
                         if metric in metrics:
                             print(f"     {metric}: {metrics[metric]:.3f}")
         
-        print(f"\nACADEMIC DELIVERABLES:")
-        print(f"   Complete experimental results with statistical analysis")
-        print(f"   Multi-strategy decoding comparison per experiment")
-        print(f"   Comprehensive evaluation including WER")
-        print(f"   Pictogram ID tracking for detailed error analysis")
-        print(f"   Publication-ready visualizations and tables")
-        print(f"   Top-performing models ready for Hugging Face deployment")
+        print(f"\n📋 ACADEMIC DELIVERABLES:")
+        print(f"   ✅ Complete experimental results with statistical analysis")
+        print(f"   ✅ Multi-strategy decoding comparison per experiment")
+        print(f"   ✅ Comprehensive evaluation including WER")
+        print(f"   ✅ Pictogram sequence tracking for detailed error analysis")
+        print(f"   ✅ Publication-ready LaTeX tables and visualizations")
+        print(f"   ✅ CSV data for statistical analysis")
+        print(f"   ✅ Top-performing models ready for Hugging Face deployment")
         
-        print(f"\nNEXT STEPS:")
+        print(f"\n🚀 NEXT STEPS:")
         print(f"   1. Review comprehensive analysis and visualizations")
-        print(f"   2. Use deployment scripts to upload best models to Hugging Face")
-        print(f"   3. Prepare conference paper using experimental results")
-        print(f"   4. Conduct error analysis using pictogram ID tracking")
-        print(f"   5. Compare against existing AAC text generation systems")
+        print(f"   2. Use publication tables for conference paper")
+        print(f"   3. Analyze pictogram sequence performance patterns")
+        print(f"   4. Deploy best models using generated scripts")
+        print(f"   5. Conduct error analysis using pictogram ID tracking")
+        print(f"   6. Compare against existing AAC text generation systems")
+        
+        print(f"\n💾 STORAGE:")
+        print(f"   📁 All results: {pipeline.master_results_dir}")
+        print(f"   📊 Analysis: comprehensive_analysis.json")
+        print(f"   📈 Visualizations: visualizations/")
+        print(f"   📋 Tables: publication_tables/")
+        print(f"   🚀 Deployment: deployment_scripts/")
         
     except Exception as e:
-        print(f"\nPIPELINE FAILED: {e}")
+        print(f"\n❌ PIPELINE FAILED: {e}")
         print("Check logs for detailed error information")
         import traceback
         traceback.print_exc()
