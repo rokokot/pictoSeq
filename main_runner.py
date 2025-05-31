@@ -2,8 +2,17 @@
 """
 Comprehensive Academic Research Pipeline for ProPicto
 
-Research Focus: survey mini-benchmark
+This module implements a systematic comparison of neural architectures and training
+approaches for pictogram-to-French text generation. The pipeline evaluates multiple
+model architectures (BARThez, French T5, mT5) across different input configurations
+and comprehensively tests all decoding strategies on each trained model.
 
+Key Features:
+- 12 meaningful experiments (3 models × 4 data configs)
+- Each experiment evaluates all 3 decoding strategies
+- Comprehensive metrics including BLEU, ROUGE-L, WER
+- Academic-grade experiment tracking and visualization
+- Production-ready model deployment preparation
 """
 
 import logging
@@ -13,8 +22,6 @@ import time
 import argparse
 import os
 import sys
-import shutil
-import psutil
 import locale
 from pathlib import Path
 from datetime import datetime
@@ -25,7 +32,6 @@ import seaborn as sns
 from collections import defaultdict, Counter
 import math
 import pickle
-import yaml
 import itertools
 from dataclasses import dataclass, field
 
@@ -36,20 +42,17 @@ from transformers import (
 )
 from datasets import Dataset
 
-# Import Jiwer for WER calculation
+# Import WER calculation library
 try:
     import jiwer
     HAS_JIWER = True
 except ImportError:
     HAS_JIWER = False
-    print("Warning: jiwer not available. WER calculation will be disabled.")
+    print("Warning: jiwer not available. Using fallback WER calculation.")
 
-# ========================================
-# UTF-8 ENVIRONMENT SETUP - CRITICAL FIX
-# ========================================
 
 def setup_utf8_environment():
-    """Setup proper UTF-8 environment to prevent encoding issues"""
+    """Configure proper UTF-8 environment to prevent encoding issues."""
     os.environ['PYTHONIOENCODING'] = 'utf-8'
     os.environ['LC_ALL'] = 'C.UTF-8'
     os.environ['LANG'] = 'C.UTF-8'
@@ -68,8 +71,9 @@ def setup_utf8_environment():
     
     plt.rcParams['font.family'] = ['DejaVu Sans']
 
+
 def safe_json_dump(obj, fp, **kwargs):
-    """Safe JSON dump with guaranteed UTF-8 encoding"""
+    """Safely dump JSON with UTF-8 encoding."""
     kwargs.setdefault('ensure_ascii', False)
     kwargs.setdefault('indent', 2)
     
@@ -79,16 +83,18 @@ def safe_json_dump(obj, fp, **kwargs):
         with open(fp, 'w', encoding='utf-8', newline='') as f:
             json.dump(obj, f, **kwargs)
 
+
 def safe_json_load(fp):
-    """Safe JSON load with guaranteed UTF-8 encoding"""
+    """Safely load JSON with UTF-8 encoding."""
     if hasattr(fp, 'read'):
         return json.load(fp)
     else:
         with open(fp, 'r', encoding='utf-8') as f:
             return json.load(f)
 
+
 def safe_text_encode(text: str) -> str:
-    """Ensure text is properly UTF-8 encoded"""
+    """Ensure text is properly UTF-8 encoded."""
     if not isinstance(text, str):
         return str(text)
     
@@ -98,23 +104,22 @@ def safe_text_encode(text: str) -> str:
     except UnicodeError:
         return text.encode('utf-8', errors='replace').decode('utf-8')
 
-# Call this immediately when module loads
+
+# Initialize UTF-8 environment
 setup_utf8_environment()
 
-# ========================================
-# DECODING STRATEGIES MODULE
-# ========================================
 
 @dataclass
 class DecodingConfig:
-    """Configuration for different decoding strategies"""
+    """Configuration for different decoding strategies."""
     name: str
     strategy_type: str
     params: Dict[str, Any] = field(default_factory=dict)
     description: str = ""
 
+
 class DecodingStrategies:
-    """Custom decoding strategies for text generation"""
+    """Implements various decoding strategies for text generation evaluation."""
     
     def __init__(self, model, tokenizer, device):
         self.model = model
@@ -124,7 +129,7 @@ class DecodingStrategies:
     
     @classmethod
     def get_all_strategies(cls) -> List[DecodingConfig]:
-        """Get all available decoding strategies for experiments"""
+        """Return all available decoding strategies for experiments."""
         return [
             DecodingConfig(
                 name="greedy",
@@ -158,7 +163,7 @@ class DecodingStrategies:
     
     def generate_with_strategy(self, input_ids: torch.Tensor, attention_mask: torch.Tensor, 
                              strategy: DecodingConfig, max_length: int = 128) -> Tuple[str, float, Dict]:
-        """Generate text using specified decoding strategy"""
+        """Generate text using specified decoding strategy."""
         start_time = time.time()
         
         generation_kwargs = {
@@ -198,10 +203,9 @@ class DecodingStrategies:
             }
             return "", generation_time, metadata
     
-    
     def generate_all_strategies(self, input_ids: torch.Tensor, attention_mask: torch.Tensor, 
                               max_length: int = 128) -> Dict[str, Tuple[str, float, Dict]]:
-        """Generate text using all available strategies for comparison"""
+        """Generate text using all available strategies for comparison."""
         results = {}
         strategies = self.get_all_strategies()
         
@@ -212,12 +216,9 @@ class DecodingStrategies:
         
         return results
 
-# ========================================
-# COMPREHENSIVE EVALUATION METRICS
-# ========================================
 
 class ComprehensiveEvaluator:
-    """Research-grade evaluator with comprehensive metrics including WER"""
+    """Research-grade evaluator with comprehensive metrics including WER."""
     
     def __init__(self, tokenizer):
         self.tokenizer = tokenizer
@@ -225,11 +226,11 @@ class ComprehensiveEvaluator:
         self.has_jiwer = HAS_JIWER
         
         if not self.has_jiwer:
-            self.logger.warning("⚠️  jiwer not available. WER calculation disabled.")
+            self.logger.warning("jiwer not available. Using fallback WER calculation.")
     
     def evaluate_predictions(self, predictions: List[str], references: List[str], 
                            strategy_name: str = "unknown") -> Dict[str, float]:
-        """Calculate comprehensive research metrics"""
+        """Calculate comprehensive research metrics."""
         if not predictions or not references:
             return {}
         
@@ -243,26 +244,22 @@ class ComprehensiveEvaluator:
         results['bleu'] = self._calculate_bleu(predictions, references)
         results['rouge_l'] = self._calculate_rouge_l(predictions, references)
         
-        # Word Error Rate (WER) - Key addition
+        # Word Error Rate calculation
         if self.has_jiwer:
             results['wer'] = self._calculate_wer(predictions, references)
         else:
             results['wer'] = self._calculate_wer_simple(predictions, references)
         
-        # Length and lexical metrics
+        # Additional metrics
         results.update(self._calculate_length_metrics(predictions, references))
         results.update(self._calculate_lexical_metrics(predictions, references))
-        
-        # French linguistic metrics
         results.update(self._calculate_french_linguistic_metrics(predictions, references))
-        
-        # Quality assessment metrics
         results.update(self._calculate_quality_metrics(predictions, references))
         
         return results
     
     def _calculate_wer(self, predictions: List[str], references: List[str]) -> float:
-        """Calculate Word Error Rate using jiwer library"""
+        """Calculate Word Error Rate using jiwer library."""
         if not self.has_jiwer:
             return self._calculate_wer_simple(predictions, references)
         
@@ -275,8 +272,6 @@ class ComprehensiveEvaluator:
                 return 1.0
             
             valid_predictions, valid_references = zip(*valid_pairs)
-            
-            # Calculate WER using jiwer
             wer_score = jiwer.wer(list(valid_references), list(valid_predictions))
             return float(wer_score)
             
@@ -285,9 +280,9 @@ class ComprehensiveEvaluator:
             return self._calculate_wer_simple(predictions, references)
     
     def _calculate_wer_simple(self, predictions: List[str], references: List[str]) -> float:
-        """Simple WER calculation as fallback"""
+        """Simple WER calculation as fallback."""
         def edit_distance(s1_words, s2_words):
-            """Calculate edit distance between two word sequences"""
+            """Calculate edit distance between two word sequences."""
             m, n = len(s1_words), len(s2_words)
             dp = [[0] * (n + 1) for _ in range(m + 1)]
             
@@ -322,7 +317,7 @@ class ComprehensiveEvaluator:
         return total_errors / total_words if total_words > 0 else 1.0
     
     def _calculate_bleu(self, predictions: List[str], references: List[str]) -> float:
-        """BLEU score calculation"""
+        """BLEU score calculation."""
         def get_ngrams(tokens, n):
             return [tuple(tokens[i:i+n]) for i in range(len(tokens)-n+1)]
         
@@ -355,7 +350,7 @@ class ComprehensiveEvaluator:
         return total_score / valid_count if valid_count > 0 else 0.0
     
     def _calculate_rouge_l(self, predictions: List[str], references: List[str]) -> float:
-        """ROUGE-L F1 score"""
+        """ROUGE-L F1 score calculation."""
         def lcs_length(x, y):
             m, n = len(x), len(y)
             dp = [[0] * (n + 1) for _ in range(m + 1)]
@@ -388,7 +383,7 @@ class ComprehensiveEvaluator:
         return np.mean(rouge_scores) if rouge_scores else 0.0
     
     def _calculate_length_metrics(self, predictions: List[str], references: List[str]) -> Dict[str, float]:
-        """Length statistics"""
+        """Calculate length-based metrics."""
         pred_lengths = [len(p.split()) for p in predictions if p.strip()]
         ref_lengths = [len(r.split()) for r in references if r.strip()]
         
@@ -404,7 +399,7 @@ class ComprehensiveEvaluator:
         }
     
     def _calculate_lexical_metrics(self, predictions: List[str], references: List[str]) -> Dict[str, float]:
-        """Lexical diversity and overlap metrics"""
+        """Calculate lexical diversity and overlap metrics."""
         metrics = {}
         
         # Vocabulary overlap
@@ -431,7 +426,7 @@ class ComprehensiveEvaluator:
         return metrics
     
     def _calculate_french_linguistic_metrics(self, predictions: List[str], references: List[str]) -> Dict[str, float]:
-        """French-specific linguistic quality metrics"""
+        """Calculate French-specific linguistic quality metrics."""
         french_articles = {'le', 'la', 'les', 'un', 'une', 'des', 'du', 'de'}
         french_pronouns = {'je', 'tu', 'il', 'elle', 'nous', 'vous', 'ils', 'elles'}
         
@@ -453,7 +448,7 @@ class ComprehensiveEvaluator:
         }
     
     def _calculate_quality_metrics(self, predictions: List[str], references: List[str]) -> Dict[str, float]:
-        """Text quality assessment metrics"""
+        """Calculate text quality assessment metrics."""
         # Generation success rate
         valid_generations = 0
         for pred in predictions:
@@ -465,7 +460,7 @@ class ComprehensiveEvaluator:
         
         generation_success_rate = valid_generations / len(predictions) if predictions else 0.0
         
-        # Fluency (no excessive repetition)
+        # Fluency score (no excessive repetition)
         fluency_scores = []
         for pred in predictions:
             words = pred.lower().split()
@@ -480,33 +475,31 @@ class ComprehensiveEvaluator:
             'fluency_score': fluency_score
         }
 
-# ========================================
-# EXPERIMENTAL CONFIGURATION
-# ========================================
 
 @dataclass
 class ModelConfig:
-    """Configuration for different model architectures"""
+    """Configuration for different model architectures."""
     name: str
     model_id: str
     tokenizer_class: str
     description: str
     is_multilingual: bool = False
 
+
 @dataclass
 class DataConfig:
-    """Configuration for different input data types"""
+    """Configuration for different input data types."""
     name: str
     path: str
     description: str
     task_prefix_template: str
 
+
 @dataclass
 class ExperimentConfig:
-    """Complete experimental configuration"""
+    """Complete experimental configuration without decoding strategy."""
     model_config: ModelConfig
     data_config: DataConfig
-    decoding_config: DecodingConfig
     experiment_id: str
     max_train_samples: int = 50000
     max_val_samples: int = 5000
@@ -515,12 +508,13 @@ class ExperimentConfig:
     batch_size: int = 8
     learning_rate: float = 3e-5
 
+
 class ExperimentalMatrix:
-    """Manages the complete experimental matrix for academic research"""
+    """Manages the experimental matrix: models × data configs only."""
     
     @classmethod
     def get_model_configs(cls) -> List[ModelConfig]:
-        """Get all model configurations"""
+        """Return all model configurations."""
         return [
             ModelConfig(
                 name="barthez",
@@ -547,7 +541,7 @@ class ExperimentalMatrix:
     
     @classmethod
     def get_data_configs(cls) -> List[DataConfig]:
-        """Get all data configurations"""
+        """Return all data configurations."""
         return [
             DataConfig(
                 name="keywords_to_sentence",
@@ -577,17 +571,14 @@ class ExperimentalMatrix:
     
     @classmethod
     def generate_all_experiments(cls, test_run: bool = False) -> List[ExperimentConfig]:
-        """Generate complete experimental matrix"""
+        """Generate experimental matrix: 3 models × 4 data configs = 12 experiments."""
         experiments = []
         
         models = cls.get_model_configs()
         data_configs = cls.get_data_configs()
-        decoding_strategies = DecodingStrategies.get_all_strategies()
         
-        for model_config, data_config, decoding_config in itertools.product(
-            models, data_configs, decoding_strategies
-        ):
-            experiment_id = f"{model_config.name}_{data_config.name}_{decoding_config.name}"
+        for model_config, data_config in itertools.product(models, data_configs):
+            experiment_id = f"{model_config.name}_{data_config.name}"
             
             # Adjust parameters for test runs
             max_train = 1000 if test_run else 50000
@@ -598,7 +589,6 @@ class ExperimentalMatrix:
             experiment = ExperimentConfig(
                 model_config=model_config,
                 data_config=data_config,
-                decoding_config=decoding_config,
                 experiment_id=experiment_id,
                 max_train_samples=max_train,
                 max_val_samples=max_val,
@@ -610,12 +600,9 @@ class ExperimentalMatrix:
         
         return experiments
 
-# ========================================
-# ACADEMIC RESEARCH CALLBACK
-# ========================================
 
 class AcademicResearchCallback(TrainerCallback):
-    """Academic research callback with comprehensive tracking and multiple decoding strategies"""
+    """Academic research callback with comprehensive tracking and multi-strategy evaluation."""
     
     def __init__(self, evaluator, eval_dataset, output_dir, experiment_config, tokenizer, generation_samples=10):
         self.evaluator = evaluator
@@ -626,7 +613,7 @@ class AcademicResearchCallback(TrainerCallback):
         self.generation_samples = generation_samples
         self.logger = logging.getLogger(__name__)
         
-        # Comprehensive tracking
+        # Tracking variables
         self.metrics_history = defaultdict(list)
         self.best_metrics = {}
         self.generation_history = []
@@ -639,16 +626,16 @@ class AcademicResearchCallback(TrainerCallback):
         (self.output_dir / "decoding_comparisons").mkdir(parents=True, exist_ok=True)
     
     def on_evaluate(self, args, state, control, model=None, tokenizer=None, logs=None, **kwargs):
-        """Comprehensive evaluation with multiple decoding strategies"""
+        """Comprehensive evaluation with all decoding strategies."""
         
         if state.global_step % (args.eval_steps * 2) == 0:
-            self.logger.info(f"📊 Running comprehensive multi-strategy evaluation at step {state.global_step}")
+            self.logger.info(f"Running comprehensive multi-strategy evaluation at step {state.global_step}")
             
             try:
                 active_tokenizer = tokenizer if tokenizer is not None else self.tokenizer
                 
                 if active_tokenizer is None:
-                    self.logger.warning("⚠️  No tokenizer available for evaluation")
+                    self.logger.warning("No tokenizer available for evaluation")
                     return
                 
                 # Initialize decoding strategies
@@ -661,7 +648,7 @@ class AcademicResearchCallback(TrainerCallback):
                 )
                 
                 if not all_results:
-                    self.logger.warning("⚠️  No valid predictions generated")
+                    self.logger.warning("No valid predictions generated")
                     return
                 
                 # Evaluate each strategy
@@ -672,7 +659,7 @@ class AcademicResearchCallback(TrainerCallback):
                         strategy_metrics[strategy_name] = metrics
                         
                         # Log strategy results
-                        self.logger.info(f"📈 {strategy_name.upper()} Results:")
+                        self.logger.info(f"{strategy_name.upper()} Results:")
                         for metric_name, value in metrics.items():
                             if metric_name in ['bleu', 'rouge_l', 'wer', 'vocab_overlap', 'generation_success_rate']:
                                 self.logger.info(f"   {metric_name}: {value:.4f}")
@@ -705,12 +692,12 @@ class AcademicResearchCallback(TrainerCallback):
                 safe_json_dump(strategy_metrics, comparison_file)
                 
             except Exception as e:
-                self.logger.error(f"❌ Multi-strategy evaluation failed: {e}")
+                self.logger.error(f"Multi-strategy evaluation failed: {e}")
                 import traceback
                 self.logger.debug(traceback.format_exc())
     
     def _generate_multi_strategy_predictions(self, model, tokenizer, decoder, eval_dataset, num_samples=200):
-        """Generate predictions with all decoding strategies and track pictogram IDs"""
+        """Generate predictions with all decoding strategies and track pictogram IDs."""
         model.eval()
         
         # Sample indices
@@ -771,17 +758,17 @@ class AcademicResearchCallback(TrainerCallback):
                     successful_generations += 1
                     
                 except Exception as e:
-                    self.logger.warning(f"⚠️  Failed to generate for sample {idx}: {e}")
+                    self.logger.warning(f"Failed to generate for sample {idx}: {e}")
                     continue
         
         model.train()
         
-        self.logger.info(f"✅ Generated {successful_generations}/{len(sample_indices)} successful multi-strategy predictions")
+        self.logger.info(f"Generated {successful_generations}/{len(sample_indices)} successful multi-strategy predictions")
         
         return all_results
     
     def _extract_pictogram_ids(self, input_text: str) -> List[int]:
-        """Extract pictogram IDs from input text if available"""
+        """Extract pictogram IDs from input text if available."""
         picto_ids = []
         
         # Try to extract numeric IDs from various formats
@@ -813,7 +800,7 @@ class AcademicResearchCallback(TrainerCallback):
         return unique_ids
     
     def _save_multi_strategy_samples(self, all_results, step):
-        """Save detailed generation samples with pictogram IDs for all strategies"""
+        """Save detailed generation samples with pictogram IDs for all strategies."""
         comparison_samples = []
         
         # Get the minimum number of samples across all strategies
@@ -855,12 +842,11 @@ class AcademicResearchCallback(TrainerCallback):
         safe_json_dump(comparison_samples, step_file)
     
     def save_comprehensive_results(self):
-        """Save all collected results with strategy comparisons"""
+        """Save all collected results with strategy comparisons."""
         results = {
             'experiment_config': {
                 'model': self.experiment_config.model_config.name,
                 'data': self.experiment_config.data_config.name,
-                'decoding': self.experiment_config.decoding_config.name,
                 'experiment_id': self.experiment_config.experiment_id
             },
             'metrics_history': dict(self.metrics_history),
@@ -883,7 +869,7 @@ class AcademicResearchCallback(TrainerCallback):
         return results
     
     def _create_comprehensive_summary(self):
-        """Create comprehensive training summary with strategy comparisons"""
+        """Create comprehensive training summary with strategy comparisons."""
         summary = {
             'total_evaluations': len([k for k in self.metrics_history.keys() if 'bleu' in k]),
             'training_steps': len(self.training_progress),
@@ -920,7 +906,7 @@ class AcademicResearchCallback(TrainerCallback):
         return summary
     
     def _create_comprehensive_plots(self):
-        """Create comprehensive visualization suite including strategy comparisons"""
+        """Create comprehensive visualization suite including strategy comparisons."""
         try:
             # Strategy comparison plots
             self._plot_strategy_comparison()
@@ -932,10 +918,10 @@ class AcademicResearchCallback(TrainerCallback):
             self._plot_metric_evolution()
             
         except Exception as e:
-            self.logger.warning(f"⚠️  Could not create plots: {e}")
+            self.logger.warning(f"Could not create plots: {e}")
     
     def _plot_strategy_comparison(self):
-        """Plot comparison between decoding strategies"""
+        """Plot comparison between decoding strategies."""
         strategies = [s.name for s in DecodingStrategies.get_all_strategies()]
         key_metrics = ['bleu', 'rouge_l', 'wer', 'generation_success_rate']
         
@@ -973,7 +959,7 @@ class AcademicResearchCallback(TrainerCallback):
         plt.close()
     
     def _plot_training_metrics(self):
-        """Plot training loss and learning rate"""
+        """Plot training loss and learning rate."""
         if not self.training_progress:
             return
             
@@ -1005,7 +991,7 @@ class AcademicResearchCallback(TrainerCallback):
         plt.close()
     
     def _plot_metric_evolution(self):
-        """Plot how metrics evolve during training for each strategy"""
+        """Plot how metrics evolve during training for each strategy."""
         strategies = [s.name for s in DecodingStrategies.get_all_strategies()]
         key_metrics = ['bleu', 'wer']
         
@@ -1035,12 +1021,9 @@ class AcademicResearchCallback(TrainerCallback):
         plt.savefig(self.output_dir / "metric_evolution.png", dpi=300, bbox_inches='tight')
         plt.close()
 
-# ========================================
-# COMPREHENSIVE RESEARCH PIPELINE
-# ========================================
 
 class ComprehensiveResearchPipeline:
-    """Complete academic research pipeline with systematic experiment management"""
+    """Complete academic research pipeline with systematic experiment management."""
     
     def __init__(self, base_experiment_name: str = "propicto_comprehensive"):
         self.base_experiment_name = base_experiment_name
@@ -1052,7 +1035,7 @@ class ComprehensiveResearchPipeline:
         
         # System info
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.logger.info(f"📱 Using device: {self.device}")
+        self.logger.info(f"Using device: {self.device}")
         
         # Experiment tracking
         self.completed_experiments = []
@@ -1060,7 +1043,7 @@ class ComprehensiveResearchPipeline:
         self.all_results = {}
         
     def _setup_master_logging(self):
-        """Setup master logging for the entire research pipeline"""
+        """Setup master logging for the entire research pipeline."""
         log_dir = Path("comprehensive_experiments") / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         
@@ -1092,8 +1075,8 @@ class ComprehensiveResearchPipeline:
         return logger
     
     def load_datasets(self, data_config: DataConfig, max_train: int, max_val: int, max_test: int) -> Tuple[List[Dict], List[Dict], List[Dict]]:
-        """Load and limit datasets according to configuration"""
-        self.logger.info(f"📊 Loading dataset: {data_config.name}")
+        """Load and limit datasets according to configuration."""
+        self.logger.info(f"Loading dataset: {data_config.name}")
         
         data_root = Path("data/processed_propicto")
         config_path = data_root / data_config.path
@@ -1117,8 +1100,8 @@ class ComprehensiveResearchPipeline:
         return train_data, valid_data, test_data
     
     def setup_model_and_tokenizer(self, model_config: ModelConfig):
-        """Setup model and tokenizer based on configuration"""
-        self.logger.info(f"🤖 Setting up model: {model_config.name}")
+        """Setup model and tokenizer based on configuration."""
+        self.logger.info(f"Setting up model: {model_config.name}")
         
         # Load tokenizer
         if model_config.tokenizer_class == "T5Tokenizer":
@@ -1149,15 +1132,15 @@ class ComprehensiveResearchPipeline:
         
         # Log model info
         param_count = sum(p.numel() for p in model.parameters())
-        self.logger.info(f"✅ Model loaded: {param_count:,} parameters")
+        self.logger.info(f"Model loaded: {param_count:,} parameters")
         
         return model, tokenizer
     
     def prepare_datasets(self, train_data, valid_data, test_data, tokenizer, data_config):
-        """Prepare datasets with task-specific formatting"""
+        """Prepare datasets with task-specific formatting."""
         
         def get_task_input(input_text: str) -> str:
-            """Format input according to task configuration"""
+            """Format input according to task configuration."""
             input_text = safe_text_encode(input_text)
             
             # Clean the input text
@@ -1203,16 +1186,16 @@ class ComprehensiveResearchPipeline:
         return datasets['train'], datasets['valid'], datasets.get('test')
     
     def run_single_experiment(self, experiment_config: ExperimentConfig):
-        """Run a single experiment with comprehensive tracking"""
+        """Run a single experiment with comprehensive tracking."""
         
         experiment_start_time = time.time()
         experiment_dir = self.master_results_dir / experiment_config.experiment_id
         experiment_dir.mkdir(parents=True, exist_ok=True)
         
-        self.logger.info(f"🚀 Starting experiment: {experiment_config.experiment_id}")
+        self.logger.info(f"Starting experiment: {experiment_config.experiment_id}")
         self.logger.info(f"   Model: {experiment_config.model_config.name}")
         self.logger.info(f"   Data: {experiment_config.data_config.name}")
-        self.logger.info(f"   Decoding: {experiment_config.decoding_config.name}")
+        self.logger.info(f"   Will evaluate all decoding strategies")
         
         try:
             # Save experiment configuration
@@ -1229,12 +1212,6 @@ class ComprehensiveResearchPipeline:
                     'path': experiment_config.data_config.path,
                     'description': experiment_config.data_config.description,
                     'task_prefix': experiment_config.data_config.task_prefix_template
-                },
-                'decoding': {
-                    'name': experiment_config.decoding_config.name,
-                    'strategy_type': experiment_config.decoding_config.strategy_type,
-                    'params': experiment_config.decoding_config.params,
-                    'description': experiment_config.decoding_config.description
                 },
                 'training': {
                     'max_train_samples': experiment_config.max_train_samples,
@@ -1334,12 +1311,12 @@ class ComprehensiveResearchPipeline:
             )
             
             # Training
-            self.logger.info("🏋️ Starting training...")
+            self.logger.info("Starting training...")
             trainer.train()
             
             # Final evaluation with all strategies
             if test_dataset:
-                self.logger.info("🧪 Running final test evaluation with all strategies...")
+                self.logger.info("Running final test evaluation with all strategies...")
                 
                 decoder = DecodingStrategies(model, tokenizer, model.device)
                 test_results = callback._generate_multi_strategy_predictions(
@@ -1354,7 +1331,7 @@ class ComprehensiveResearchPipeline:
                         metrics = evaluator.evaluate_predictions(predictions, references, strategy_name)
                         final_test_metrics[strategy_name] = metrics
                         
-                        self.logger.info(f"🧪 {strategy_name.upper()} Test Results:")
+                        self.logger.info(f"{strategy_name.upper()} Test Results:")
                         for metric_name, value in metrics.items():
                             if metric_name in ['bleu', 'rouge_l', 'wer', 'vocab_overlap', 'generation_success_rate']:
                                 self.logger.info(f"   {metric_name}: {value:.4f}")
@@ -1408,13 +1385,13 @@ class ComprehensiveResearchPipeline:
             self.completed_experiments.append(experiment_config.experiment_id)
             self.all_results[experiment_config.experiment_id] = experiment_results
             
-            self.logger.info(f"✅ Experiment completed: {experiment_config.experiment_id}")
+            self.logger.info(f"Experiment completed: {experiment_config.experiment_id}")
             self.logger.info(f"   Training time: {experiment_results['training_time_minutes']:.1f} minutes")
             
             return experiment_results
             
         except Exception as e:
-            self.logger.error(f"❌ Experiment failed: {experiment_config.experiment_id} - {e}")
+            self.logger.error(f"Experiment failed: {experiment_config.experiment_id} - {e}")
             self.failed_experiments.append((experiment_config.experiment_id, str(e)))
             
             # Save failure info
@@ -1430,24 +1407,26 @@ class ComprehensiveResearchPipeline:
             raise
     
     def run_all_experiments(self, test_run: bool = False):
-        """Run complete experimental matrix"""
+        """Run 12 meaningful experiments (3 models × 4 data configs)."""
         
         start_time = time.time()
         experiments = ExperimentalMatrix.generate_all_experiments(test_run=test_run)
         
-        self.logger.info("🔬 COMPREHENSIVE PROPICTO RESEARCH PIPELINE")
+        self.logger.info("COMPREHENSIVE PROPICTO RESEARCH PIPELINE")
         self.logger.info("=" * 80)
-        self.logger.info(f"📊 Total experiments: {len(experiments)}")
-        self.logger.info(f"🤖 Models: {len(ExperimentalMatrix.get_model_configs())}")
-        self.logger.info(f"📄 Data configs: {len(ExperimentalMatrix.get_data_configs())}")
-        self.logger.info(f"🎯 Decoding strategies: {len(DecodingStrategies.get_all_strategies())}")
+        self.logger.info(f"Total experiments: {len(experiments)} (3 models × 4 data configs)")
+        self.logger.info(f"Each experiment evaluates 3 decoding strategies")
+        self.logger.info(f"Models: {len(ExperimentalMatrix.get_model_configs())}")
+        self.logger.info(f"Data configs: {len(ExperimentalMatrix.get_data_configs())}")
         
         if test_run:
-            self.logger.info("🧪 TEST RUN MODE - Limited samples and epochs")
+            self.logger.info("TEST RUN MODE - Limited samples and epochs")
         
         # Save experimental matrix overview
         matrix_overview = {
             'total_experiments': len(experiments),
+            'total_model_data_combinations': len(experiments),
+            'decoding_strategies_per_experiment': 3,
             'models': [m.name for m in ExperimentalMatrix.get_model_configs()],
             'data_configs': [d.name for d in ExperimentalMatrix.get_data_configs()],
             'decoding_strategies': [s.name for s in DecodingStrategies.get_all_strategies()],
@@ -1460,8 +1439,11 @@ class ComprehensiveResearchPipeline:
         # Run experiments
         for i, experiment in enumerate(experiments, 1):
             self.logger.info(f"\n{'='*60}")
-            self.logger.info(f"🔬 EXPERIMENT {i}/{len(experiments)}")
+            self.logger.info(f"EXPERIMENT {i}/{len(experiments)}")
             self.logger.info(f"ID: {experiment.experiment_id}")
+            self.logger.info(f"Model: {experiment.model_config.name}")
+            self.logger.info(f"Data: {experiment.data_config.name}")
+            self.logger.info(f"Will evaluate: greedy, beam_search, nucleus_sampling")
             self.logger.info(f"{'='*60}")
             
             try:
@@ -1469,10 +1451,10 @@ class ComprehensiveResearchPipeline:
                 
                 # Log progress
                 success_rate = len(self.completed_experiments) / i * 100
-                self.logger.info(f"📊 Progress: {i}/{len(experiments)} ({success_rate:.1f}% success rate)")
+                self.logger.info(f"Progress: {i}/{len(experiments)} ({success_rate:.1f}% success rate)")
                 
             except Exception as e:
-                self.logger.error(f"💥 Experiment {i} failed, continuing with next...")
+                self.logger.error(f"Experiment {i} failed, continuing with next...")
                 continue
         
         total_time = time.time() - start_time
@@ -1489,8 +1471,8 @@ class ComprehensiveResearchPipeline:
         return self.master_results_dir
     
     def _generate_comprehensive_analysis(self):
-        """Generate comprehensive analysis across all experiments"""
-        self.logger.info("📈 Generating comprehensive analysis...")
+        """Generate comprehensive analysis across all experiments."""
+        self.logger.info("Generating comprehensive analysis...")
         
         # Collect all results
         analysis = {
@@ -1507,7 +1489,7 @@ class ComprehensiveResearchPipeline:
             'statistical_analysis': {}
         }
         
-        # Analyze by model
+        # Analyze by model, data config, and strategy
         model_results = defaultdict(list)
         data_results = defaultdict(list)
         strategy_results = defaultdict(list)
@@ -1592,27 +1574,27 @@ class ComprehensiveResearchPipeline:
         return analysis
     
     def _create_master_visualizations(self, analysis):
-        """Create master visualizations for the entire experimental matrix"""
+        """Create master visualizations for the entire experimental matrix."""
         
         # Set up plotting style
         plt.style.use('seaborn-v0_8-paper')
         fig_dir = self.master_results_dir / "visualizations"
         fig_dir.mkdir(exist_ok=True)
         
-        # 1. Model comparison
+        # Model comparison
         self._plot_model_comparison(analysis, fig_dir)
         
-        # 2. Data configuration comparison
+        # Data configuration comparison
         self._plot_data_config_comparison(analysis, fig_dir)
         
-        # 3. Decoding strategy comparison
+        # Decoding strategy comparison
         self._plot_decoding_strategy_comparison(analysis, fig_dir)
         
-        # 4. Comprehensive heatmap
+        # Comprehensive heatmap
         self._plot_comprehensive_heatmap(analysis, fig_dir)
         
     def _plot_model_comparison(self, analysis, fig_dir):
-        """Plot model performance comparison"""
+        """Plot model performance comparison."""
         model_perf = analysis['model_performance']
         
         if not model_perf:
@@ -1652,7 +1634,7 @@ class ComprehensiveResearchPipeline:
         plt.close()
     
     def _plot_data_config_comparison(self, analysis, fig_dir):
-        """Plot data configuration performance comparison"""
+        """Plot data configuration performance comparison."""
         data_perf = analysis['data_config_performance']
         
         if not data_perf:
@@ -1692,7 +1674,7 @@ class ComprehensiveResearchPipeline:
         plt.close()
     
     def _plot_decoding_strategy_comparison(self, analysis, fig_dir):
-        """Plot decoding strategy performance comparison"""
+        """Plot decoding strategy performance comparison."""
         strategy_perf = analysis['decoding_strategy_performance']
         
         if not strategy_perf:
@@ -1727,7 +1709,7 @@ class ComprehensiveResearchPipeline:
         plt.close()
     
     def _plot_comprehensive_heatmap(self, analysis, fig_dir):
-        """Create comprehensive performance heatmap"""
+        """Create comprehensive performance heatmap."""
         
         # Extract BLEU scores for heatmap
         models = [m.name for m in ExperimentalMatrix.get_model_configs()]
@@ -1781,8 +1763,8 @@ class ComprehensiveResearchPipeline:
         plt.close()
     
     def _create_deployment_recommendations(self):
-        """Create deployment recommendations for the top performing models"""
-        self.logger.info("🚀 Creating deployment recommendations...")
+        """Create deployment recommendations for the top performing models."""
+        self.logger.info("Creating deployment recommendations...")
         
         # Find top 3 experiments for each key metric
         key_metrics = ['bleu', 'rouge_l', 'wer', 'generation_success_rate']
@@ -1868,289 +1850,20 @@ class ComprehensiveResearchPipeline:
         # Save deployment recommendations
         safe_json_dump(deployment_info, self.master_results_dir / "deployment_recommendations.json")
         
-        # Create deployment scripts
-        self._create_deployment_scripts(deployment_info)
-        
         return deployment_info
     
-    def _create_deployment_scripts(self, deployment_info):
-        """Create scripts for deploying models to Hugging Face"""
-        
-        scripts_dir = self.master_results_dir / "deployment_scripts"
-        scripts_dir.mkdir(exist_ok=True)
-        
-        # Create upload script
-        upload_script = '''#!/usr/bin/env python3
-"""
-Upload ProPicto models to Hugging Face Hub
-"""
-
-from huggingface_hub import HfApi, Repository, ModelCard
-from pathlib import Path
-import json
-
-def upload_model(model_path: str, model_name: str, organization: str = "your-org"):
-    """Upload a trained model to Hugging Face Hub"""
-    
-    # Initialize HF API
-    api = HfApi()
-    
-    # Create repository
-    repo_id = f"{organization}/{model_name}"
-    
-    try:
-        api.create_repo(repo_id=repo_id, exist_ok=True)
-        
-        # Upload model files
-        api.upload_folder(
-            folder_path=model_path,
-            repo_id=repo_id,
-            repo_type="model"
-        )
-        
-        print(f"✅ Successfully uploaded {model_name} to {repo_id}")
-        
-    except Exception as e:
-        print(f"❌ Failed to upload {model_name}: {e}")
-
-def create_model_card(experiment_info, output_path):
-    """Create a model card for the uploaded model"""
-    
-    card_content = f\"\"\"
----
-language: fr
-license: mit
-tags:
-- text-generation
-- pictogram-to-text
-- aac
-- french
-datasets:
-- arasaac
-metrics:
-- bleu
-- rouge
-- wer
-widget:
-- text: "mots: chat voir maison"
-  example_title: "Keywords to sentence"
----
-
-# ProPicto: Pictogram to French Text Generation
-
-This model converts pictogram sequences or keywords to natural French sentences for Augmentative and Alternative Communication (AAC) applications.
-
-## Model Details
-
-- **Model**: {experiment_info['model']['name']}
-- **Training Data**: {experiment_info['data']['description']}
-- **Task**: {experiment_info['data']['name']}
-
-## Performance
-
-| Metric | Score |
-|--------|--------|
-| BLEU | {experiment_info.get('test_bleu', 'N/A')} |
-| ROUGE-L | {experiment_info.get('test_rouge', 'N/A')} |
-| WER | {experiment_info.get('test_wer', 'N/A')} |
-
-## Usage
-
-```python
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
-
-tokenizer = AutoTokenizer.from_pretrained("your-org/{experiment_info['model']['name']}")
-model = AutoModelForSeq2SeqLM.from_pretrained("your-org/{experiment_info['model']['name']}")
-
-# Example usage
-input_text = "Corriger et compléter: chat voir maison"
-inputs = tokenizer(input_text, return_tensors="pt")
-outputs = model.generate(**inputs, max_length=128, num_beams=4)
-result = tokenizer.decode(outputs[0], skip_special_tokens=True)
-print(result)
-```
-
-## Citation
-
-```bibtex
-@misc{{propicto2024,
-  title={{ProPicto: Comprehensive Analysis of Neural Pictogram-to-French Text Generation}},
-  author={{Research Team}},
-  year={{2024}},
-  publisher={{Hugging Face}},
-  url={{https://huggingface.co/your-org/{experiment_info['model']['name']}}}
-}}
-```
-\"\"\"
-    
-    with open(output_path, 'w', encoding='utf-8') as f:
-        f.write(card_content)
-
-if __name__ == "__main__":
-    # Load deployment recommendations
-    with open("deployment_recommendations.json", 'r', encoding='utf-8') as f:
-        deployment_info = json.load(f)
-    
-    # Upload best models
-    for model_name, info in deployment_info['best_models_for_deployment'].items():
-        model_path = info['model_path']
-        upload_name = f"propicto-{model_name}-best"
-        
-        print(f"🚀 Uploading {upload_name}...")
-        upload_model(model_path, upload_name)
-        
-        # Create model card
-        card_path = f"{upload_name}_README.md"
-        create_model_card(info['config'], card_path)
-        print(f"📝 Created model card: {card_path}")
-'''
-        
-        with open(scripts_dir / "upload_to_huggingface.py", 'w', encoding='utf-8') as f:
-            f.write(upload_script)
-        
-        # Create evaluation script
-        eval_script = '''#!/usr/bin/env python3
-"""
-Evaluate deployed ProPicto models
-"""
-
-import torch
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
-import json
-from pathlib import Path
-
-def evaluate_deployed_model(model_name: str, test_data_path: str):
-    """Evaluate a deployed model on test data"""
-    
-    print(f"🔍 Evaluating {model_name}...")
-    
-    # Load model and tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
-    
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(device)
-    model.eval()
-    
-    # Load test data
-    with open(test_data_path, 'r', encoding='utf-8') as f:
-        test_data = json.load(f)
-    
-    predictions = []
-    references = []
-    
-    with torch.no_grad():
-        for example in test_data[:100]:  # Evaluate on first 100 samples
-            input_text = example['input_text']
-            reference = example['target_text']
-            
-            # Generate prediction
-            inputs = tokenizer(input_text, return_tensors="pt", max_length=128, truncation=True)
-            inputs = {k: v.to(device) for k, v in inputs.items()}
-            
-            outputs = model.generate(
-                **inputs,
-                max_length=128,
-                num_beams=4,
-                length_penalty=1.2,
-                early_stopping=True
-            )
-            
-            prediction = tokenizer.decode(outputs[0], skip_special_tokens=True)
-            
-            predictions.append(prediction)
-            references.append(reference)
-    
-    # Calculate basic metrics
-    from collections import Counter
-    import numpy as np
-    
-    # Simple BLEU calculation
-    def calculate_bleu(predictions, references):
-        # Simplified BLEU implementation
-        total_score = 0
-        count = 0
-        
-        for pred, ref in zip(predictions, references):
-            pred_tokens = pred.lower().split()
-            ref_tokens = ref.lower().split()
-            
-            if len(pred_tokens) > 0 and len(ref_tokens) > 0:
-                # 1-gram precision
-                pred_1grams = Counter(pred_tokens)
-                ref_1grams = Counter(ref_tokens)
-                overlap = sum((pred_1grams & ref_1grams).values())
-                precision = overlap / len(pred_tokens)
-                
-                if precision > 0:
-                    total_score += precision
-                    count += 1
-        
-        return total_score / count if count > 0 else 0
-    
-    bleu_score = calculate_bleu(predictions, references)
-    
-    results = {
-        'model': model_name,
-        'bleu_score': bleu_score,
-        'total_samples': len(predictions),
-        'sample_predictions': [
-            {
-                'input': test_data[i]['input_text'],
-                'prediction': predictions[i],
-                'reference': references[i]
-            } for i in range(min(5, len(predictions)))
-        ]
-    }
-    
-    print(f"📊 Results for {model_name}:")
-    print(f"   BLEU Score: {bleu_score:.4f}")
-    print(f"   Samples evaluated: {len(predictions)}")
-    
-    return results
-
-if __name__ == "__main__":
-    # Example usage
-    models_to_evaluate = [
-        "your-org/propicto-barthez-best",
-        "your-org/propicto-french_t5-best",
-        "your-org/propicto-mt5_base-best"
-    ]
-    
-    test_data_path = "path/to/test/data.json"
-    
-    all_results = {}
-    for model_name in models_to_evaluate:
-        try:
-            results = evaluate_deployed_model(model_name, test_data_path)
-            all_results[model_name] = results
-        except Exception as e:
-            print(f"❌ Failed to evaluate {model_name}: {e}")
-    
-    # Save results
-    with open("deployment_evaluation_results.json", 'w', encoding='utf-8') as f:
-        json.dump(all_results, f, indent=2, ensure_ascii=False)
-    
-    print("✅ Evaluation complete!")
-'''
-        
-        with open(scripts_dir / "evaluate_deployed_models.py", 'w', encoding='utf-8') as f:
-            f.write(eval_script)
-        
-        self.logger.info(f"✅ Created deployment scripts in {scripts_dir}")
-    
     def _log_final_summary(self, total_time_seconds):
-        """Log comprehensive final summary"""
+        """Log comprehensive final summary."""
         
         self.logger.info("\n" + "="*100)
-        self.logger.info("🎉 COMPREHENSIVE PROPICTO RESEARCH PIPELINE COMPLETED")
+        self.logger.info("COMPREHENSIVE PROPICTO RESEARCH PIPELINE COMPLETED")
         self.logger.info("="*100)
         
         # Overview
         total_experiments = len(self.completed_experiments) + len(self.failed_experiments)
         success_rate = len(self.completed_experiments) / total_experiments * 100 if total_experiments > 0 else 0
         
-        self.logger.info(f"📊 EXPERIMENT OVERVIEW:")
+        self.logger.info(f"EXPERIMENT OVERVIEW:")
         self.logger.info(f"   Total experiments: {total_experiments}")
         self.logger.info(f"   Successful: {len(self.completed_experiments)}")
         self.logger.info(f"   Failed: {len(self.failed_experiments)}")
@@ -2159,7 +1872,7 @@ if __name__ == "__main__":
         
         # Best results
         if self.all_results:
-            self.logger.info(f"\n🏆 BEST RESULTS:")
+            self.logger.info(f"\nBEST RESULTS:")
             
             # Find best BLEU score
             best_bleu = 0
@@ -2185,35 +1898,31 @@ if __name__ == "__main__":
         
         # Failed experiments
         if self.failed_experiments:
-            self.logger.info(f"\n⚠️  FAILED EXPERIMENTS:")
+            self.logger.info(f"\nFAILED EXPERIMENTS:")
             for exp_id, error in self.failed_experiments:
                 self.logger.info(f"   {exp_id}: {error}")
         
         # Paths and deliverables
-        self.logger.info(f"\n📁 DELIVERABLES:")
+        self.logger.info(f"\nDELIVERABLES:")
         self.logger.info(f"   Master results: {self.master_results_dir}")
         self.logger.info(f"   Comprehensive analysis: {self.master_results_dir / 'comprehensive_analysis.json'}")
         self.logger.info(f"   Deployment recommendations: {self.master_results_dir / 'deployment_recommendations.json'}")
         self.logger.info(f"   Visualizations: {self.master_results_dir / 'visualizations'}")
-        self.logger.info(f"   Deployment scripts: {self.master_results_dir / 'deployment_scripts'}")
         
         # Academic insights
-        self.logger.info(f"\n📝 ACADEMIC INSIGHTS:")
-        self.logger.info(f"   ✅ Complete experimental matrix: 3 models × 4 data configs × 3 strategies")
-        self.logger.info(f"   ✅ Comprehensive evaluation: BLEU, ROUGE-L, WER, success rate")
-        self.logger.info(f"   ✅ Multi-strategy comparison per experiment")
-        self.logger.info(f"   ✅ Pictogram ID tracking for error analysis")
-        self.logger.info(f"   ✅ Ready for conference publication")
-        self.logger.info(f"   ✅ Models ready for Hugging Face deployment")
+        self.logger.info(f"\nACADEMIC INSIGHTS:")
+        self.logger.info(f"   Complete experimental matrix: 3 models × 4 data configs")
+        self.logger.info(f"   Comprehensive evaluation: BLEU, ROUGE-L, WER, success rate")
+        self.logger.info(f"   Multi-strategy comparison per experiment")
+        self.logger.info(f"   Pictogram ID tracking for error analysis")
+        self.logger.info(f"   Ready for conference publication")
+        self.logger.info(f"   Models ready for Hugging Face deployment")
         
         self.logger.info("="*100)
 
-# ========================================
-# MAIN EXECUTION FUNCTION
-# ========================================
 
 def main():
-    """Main function with comprehensive argument parsing"""
+    """Main function with comprehensive argument parsing."""
     setup_utf8_environment()
     
     parser = argparse.ArgumentParser(
@@ -2221,30 +1930,29 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 Examples:
-  # Run full experimental matrix
-  python comprehensive_propicto_research.py --run-all
+  # Run full experimental matrix (12 experiments)
+  python main_runner.py --run-all
   
   # Run test mode (quick validation)
-  python comprehensive_propicto_research.py --run-all --test-run
+  python main_runner.py --run-all --test-run
   
   # Run specific experiment
-  python comprehensive_propicto_research.py --model barthez --data keywords_to_sentence --decoding greedy
+  python main_runner.py --model barthez --data keywords_to_sentence
   
   # Run with custom limits
-  python comprehensive_propicto_research.py --run-all --max-train 10000 --max-test 1000
+  python main_runner.py --run-all --max-train 10000 --max-test 1000
 
 Experimental Matrix:
   Models: barthez, french_t5, mt5_base
   Data Configs: keywords_to_sentence, pictos_tokens_to_sentence, hybrid_to_sentence, direct_to_sentence  
-  Decoding: greedy, beam_search, nucleus_sampling
-  Total: 3 × 4 × 3 = 36 experiments
+  Total: 3 × 4 = 12 experiments (each evaluates 3 decoding strategies)
         '''
     )
     
     # Main execution modes
     execution_group = parser.add_mutually_exclusive_group(required=True)
     execution_group.add_argument('--run-all', action='store_true',
-                                help='Run complete experimental matrix (36 experiments)')
+                                help='Run complete experimental matrix (12 experiments)')
     execution_group.add_argument('--single-experiment', action='store_true',
                                 help='Run single experiment with specified parameters')
     
@@ -2256,9 +1964,6 @@ Experimental Matrix:
                        choices=['keywords_to_sentence', 'pictos_tokens_to_sentence', 
                                'hybrid_to_sentence', 'direct_to_sentence'],
                        help='Data configuration for single experiment')
-    parser.add_argument('--decoding',
-                       choices=['greedy', 'beam_search', 'nucleus_sampling'],
-                       help='Decoding strategy for single experiment')
     
     # Training parameters
     parser.add_argument('--max-train', type=int, default=50000,
@@ -2284,31 +1989,31 @@ Experimental Matrix:
     
     # Validate single experiment arguments
     if args.single_experiment:
-        if not all([args.model, args.data, args.decoding]):
-            parser.error("Single experiment mode requires --model, --data, and --decoding")
+        if not all([args.model, args.data]):
+            parser.error("Single experiment mode requires --model and --data")
     
-    print("🔬 COMPREHENSIVE ACADEMIC RESEARCH PIPELINE FOR PROPICTO")
+    print("COMPREHENSIVE ACADEMIC RESEARCH PIPELINE FOR PROPICTO")
     print("=" * 80)
-    print("✅ Multiple model architectures (BARThez, French T5, mT5-base)")
-    print("✅ Multiple input configurations (4 types)")
-    print("✅ Multiple decoding strategies (greedy, beam, nucleus)")
-    print("✅ Comprehensive evaluation metrics including WER")
-    print("✅ Academic experiment tracking and organization")
-    print("✅ Hugging Face deployment preparation")
-    print("✅ Proper UTF-8 encoding throughout")
+    print("Multiple model architectures (BARThez, French T5, mT5-base)")
+    print("Multiple input configurations (4 types)")
+    print("Multiple decoding strategies (greedy, beam, nucleus)")
+    print("Comprehensive evaluation metrics including WER")
+    print("Academic experiment tracking and organization")
+    print("Hugging Face deployment preparation")
+    print("Proper UTF-8 encoding throughout")
     
     if args.test_run:
-        print("🧪 TEST RUN MODE - Limited samples and epochs for validation")
+        print("TEST RUN MODE - Limited samples and epochs for validation")
         
     # Test UTF-8 encoding
     test_french = "Test français: café, être, déjà, naïve, mémoire, pictogramme"
-    print(f"🔤 UTF-8 test: {test_french}")
+    print(f"UTF-8 test: {test_french}")
     
     # Check jiwer availability
     if HAS_JIWER:
-        print("✅ jiwer available - WER calculation enabled")
+        print("jiwer available - WER calculation enabled")
     else:
-        print("⚠️  jiwer not available - using fallback WER calculation")
+        print("jiwer not available - using fallback WER calculation")
     
     # Initialize pipeline
     pipeline = ComprehensiveResearchPipeline(args.experiment_name)
@@ -2316,8 +2021,9 @@ Experimental Matrix:
     try:
         if args.run_all:
             # Run complete experimental matrix
-            print(f"\n🚀 Running complete experimental matrix...")
-            print(f"   Total experiments: 36 (3 models × 4 configs × 3 strategies)")
+            print(f"\nRunning complete experimental matrix...")
+            print(f"   Total experiments: 12 (3 models × 4 configs)")
+            print(f"   Each experiment evaluates 3 decoding strategies")
             print(f"   Max samples: {args.max_train} train, {args.max_val} val, {args.max_test} test")
             
             if args.test_run:
@@ -2325,26 +2031,24 @@ Experimental Matrix:
             
             results_dir = pipeline.run_all_experiments(test_run=args.test_run)
             
-            print(f"\n🎉 COMPLETE EXPERIMENTAL MATRIX FINISHED!")
-            print(f"📁 Results directory: {results_dir}")
+            print(f"\nCOMPLETE EXPERIMENTAL MATRIX FINISHED!")
+            print(f"Results directory: {results_dir}")
             
         else:
             # Run single experiment
-            print(f"\n🔬 Running single experiment...")
+            print(f"\nRunning single experiment...")
             print(f"   Model: {args.model}")
             print(f"   Data: {args.data}")
-            print(f"   Decoding: {args.decoding}")
+            print(f"   Will evaluate all 3 decoding strategies")
             
             # Create single experiment config
             model_configs = {m.name: m for m in ExperimentalMatrix.get_model_configs()}
             data_configs = {d.name: d for d in ExperimentalMatrix.get_data_configs()}
-            decoding_configs = {s.name: s for s in DecodingStrategies.get_all_strategies()}
             
             experiment_config = ExperimentConfig(
                 model_config=model_configs[args.model],
                 data_config=data_configs[args.data],
-                decoding_config=decoding_configs[args.decoding],
-                experiment_id=f"{args.model}_{args.data}_{args.decoding}",
+                experiment_id=f"{args.model}_{args.data}",
                 max_train_samples=args.max_train if not args.test_run else 1000,
                 max_val_samples=args.max_val if not args.test_run else 200,
                 max_test_samples=args.max_test if not args.test_run else 200,
@@ -2355,28 +2059,27 @@ Experimental Matrix:
             
             results = pipeline.run_single_experiment(experiment_config)
             
-            print(f"\n🎉 SINGLE EXPERIMENT COMPLETED!")
-            print(f"📁 Results: {results['model_path']}")
+            print(f"\nSINGLE EXPERIMENT COMPLETED!")
+            print(f"Results: {results['model_path']}")
             
             # Show key metrics
             if 'final_test_metrics' in results:
-                print(f"\n📊 Key Results:")
+                print(f"\nKey Results:")
                 for strategy, metrics in results['final_test_metrics'].items():
                     print(f"   {strategy.upper()}:")
                     for metric in ['bleu', 'rouge_l', 'wer', 'generation_success_rate']:
                         if metric in metrics:
                             print(f"     {metric}: {metrics[metric]:.3f}")
         
-        print(f"\n📚 ACADEMIC DELIVERABLES:")
-        print(f"   ✅ Complete experimental results with statistical analysis")
-        print(f"   ✅ Multi-strategy decoding comparison per experiment")
-        print(f"   ✅ Comprehensive evaluation including WER")
-        print(f"   ✅ Pictogram ID tracking for detailed error analysis")
-        print(f"   ✅ Publication-ready visualizations and tables")
-        print(f"   ✅ Top-performing models ready for Hugging Face deployment")
-        print(f"   ✅ Deployment scripts and evaluation protocols")
+        print(f"\nACADEMIC DELIVERABLES:")
+        print(f"   Complete experimental results with statistical analysis")
+        print(f"   Multi-strategy decoding comparison per experiment")
+        print(f"   Comprehensive evaluation including WER")
+        print(f"   Pictogram ID tracking for detailed error analysis")
+        print(f"   Publication-ready visualizations and tables")
+        print(f"   Top-performing models ready for Hugging Face deployment")
         
-        print(f"\n🚀 NEXT STEPS:")
+        print(f"\nNEXT STEPS:")
         print(f"   1. Review comprehensive analysis and visualizations")
         print(f"   2. Use deployment scripts to upload best models to Hugging Face")
         print(f"   3. Prepare conference paper using experimental results")
@@ -2384,13 +2087,14 @@ Experimental Matrix:
         print(f"   5. Compare against existing AAC text generation systems")
         
     except Exception as e:
-        print(f"\n❌ PIPELINE FAILED: {e}")
-        print("🔧 Check logs for detailed error information")
+        print(f"\nPIPELINE FAILED: {e}")
+        print("Check logs for detailed error information")
         import traceback
         traceback.print_exc()
         return 1
     
     return 0
+
 
 if __name__ == "__main__":
     sys.exit(main())
