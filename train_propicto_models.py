@@ -629,17 +629,18 @@ class ResearchCallback(TrainerCallback):
                         do_sample=False
                     )
                     
+                    output_ids = outputs[0].cpu().numpy().tolist()
                     # Decode prediction with proper UTF-8 handling
-                    prediction = tokenizer.decode(outputs[0], skip_special_tokens=True)
+                    prediction = tokenizer.decode(outputs[0], skip_special_tokens=True,clean_up_tokenization_spaces=False)
                     prediction = safe_text_encode(prediction)
                     
                     # Decode reference with proper UTF-8 handling
                     label_ids = [l for l in example['labels'] if l != -100]
-                    reference = tokenizer.decode(label_ids, skip_special_tokens=True)
+                    reference = tokenizer.decode(label_ids, skip_special_tokens=True,clean_up_tokenization_spaces=False)
                     reference = safe_text_encode(reference)
                     
                     # Decode input with proper UTF-8 handling
-                    input_text = tokenizer.decode(example['input_ids'], skip_special_tokens=True)
+                    input_text = tokenizer.decode(example['input_ids'], skip_special_tokens=True,clean_up_tokenization_spaces=False)
                     input_text = safe_text_encode(input_text)
                     
                     # Validate outputs
@@ -1021,7 +1022,7 @@ class ResearchPipeline:
     
     def setup_model_and_tokenizer(self, model_choice: str):
         """Setup model and tokenizer with comprehensive logging"""
-        self.logger.info(f"🤖 Setting up model: {model_choice}")
+        self.logger.info(f"set up model: {model_choice}")
         
         model_configs = {
             'barthez': {
@@ -1042,7 +1043,19 @@ class ResearchPipeline:
         
         # Load model and tokenizer
         self.logger.info(f"📥 Loading {model_name}")
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        
+        from transformers import AutoTokenizer, T5Tokenizer
+
+        try:
+            # Try fast tokenizer first
+            tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
+        except Exception as e:
+            print(f"[WARN] Fast tokenizer failed for {model_name}: {e}")
+            if "t5" in model_name.lower():
+                tokenizer = T5Tokenizer.from_pretrained(model_name)
+            else:
+                tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=False)
+
         model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
         
         if tokenizer.pad_token is None:
@@ -1126,8 +1139,8 @@ class ResearchPipeline:
                 inputs.append(french_input)
                 targets.append(target_text)
             
-            model_inputs = tokenizer(inputs, max_length=128, truncation=True, padding='max_length')
-            labels = tokenizer(targets, max_length=128, truncation=True, padding='max_length')
+            model_inputs = tokenizer(inputs, max_length=128, truncation=True, padding='max_length',return_tensors=None)
+            labels = tokenizer(targets, max_length=128, truncation=True, padding='max_length',return_tensors=None)
             
             model_inputs["labels"] = [
                 [t if t != tokenizer.pad_token_id else -100 for t in label_ids]
