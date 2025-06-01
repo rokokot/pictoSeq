@@ -1,8 +1,16 @@
 #!/usr/bin/env python3
 """
 ProPicto Data Processor
-Extract and process data from your propicto source files
-Maintains natural sentence fluency while leveraging ARASAAC keywords
+Extract and process data from propicto source files (expects a specific directory structure)
+
+Filters the sentences for keyword coverage, fluence, and length
+
+Args:
+
+
+Returns:
+
+
 """
 
 import json
@@ -20,19 +28,18 @@ import seaborn as sns
 class ProPictoProcessor:
     """Process ProPicto source files into training datasets"""
     
-    def __init__(self, 
-                 source_dir: str = "data/raw/propicto_source",
-                 arasaac_metadata_path: str = "data/raw/metadata/arasaac_metadata.json"):
+    def __init__(self, source_dir: str = "data/raw/propicto_source", arasaac_metadata_path: str = "data/raw/metadata/arasaac_metadata.json"):
+       
         self.source_dir = Path(source_dir)
         self.logger = logging.getLogger(__name__)
         
-        # Load ARASAAC metadata
+        # load ARASAAC metadata
         with open(arasaac_metadata_path, 'r', encoding='utf-8') as f:
             self.arasaac_metadata = json.load(f)
         
-        self.logger.info(f"Loaded ARASAAC metadata for {len(self.arasaac_metadata)} pictograms")
+        self.logger.info(f" ARASAAC metadata for {len(self.arasaac_metadata)} pictograms")
         
-        # Quality statistics
+        # quality stats
         self.stats = {
             'total_files': 0,
             'total_examples': 0,
@@ -563,16 +570,10 @@ Example {i+1} (ID: {example['id']}):
         return report
 
 def main():
-    """Main processing function"""
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s'
-    )
+    logging.basicConfig(level=logging.INFO,format='%(asctime)s - %(levelname)s - %(message)s')
     
-    print("🔄 ProPicto Data Processor")
-    print("=" * 40)
-    print("Processing natural speech data with ARASAAC keywords")
-    
+    print("ProPicto Data Processor")
+
     # Initialize processor
     processor = ProPictoProcessor()
     
@@ -609,7 +610,7 @@ def main():
         processor.save_processed_datasets(split_datasets)
         
         # Create visualizations
-        print("\n7. Creating visualizations...")
+        print("\n7. generating distribution plots ...")
         processor.create_visualizations(analysis, split_datasets)
         
         # Generate report
@@ -620,18 +621,10 @@ def main():
         with open("propicto_processing_report.txt", 'w', encoding='utf-8') as f:
             f.write(report)
         
-        # Display summary
-        print(report)
-        
-        print("\n✅ ProPicto processing complete!")
-        print("\nNext steps:")
-        print("1. Review the quality report above")
-        print("2. Check plots/ for data analysis")
-        print("3. Train models: python train_propicto_models.py")
-        print("4. Evaluate results")
+    
         
     except Exception as e:
-        print(f"❌ Error during processing: {e}")
+        print(f"error : {e}")
         raise
 
 if __name__ == "__main__":

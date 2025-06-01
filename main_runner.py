@@ -77,7 +77,7 @@ class HPCEnvironment:
         if results_base_path:
             self.results_base = Path(results_base_path)
         elif self.vsc_scratch:
-            self.results_base = Path(self.vsc_scratch) / "pictoSeq_results"
+            self.results_base = Path(self.vsc_scratch) / "pictoseq_results"
         else:
             self.results_base = Path("pictoseq")
         
@@ -141,42 +141,41 @@ class DecodingStrategies:
                 strategy_type="deterministic",
                 params={
                     "num_beams": 1, 
-                    "early_stopping": False,  # Must be False when num_beams=1
+                    "early_stopping": False,  
                     "do_sample": False
                 },
-                description="Greedy search - always pick most likely token"
+                description="greedy -> always picks the most likely token"
             ),
             DecodingConfig(
                 name="beam_search",
                 strategy_type="search",
                 params={
-                    "num_beams": 4,
-                    "length_penalty": 1.2,
-                    "early_stopping": True,  # OK when num_beams > 1
+                    "num_beams": 8,
+                    "length_penalty": 1.8,
+                    "early_stopping": True,  
                     "no_repeat_ngram_size": 2,
                     "do_sample": False
                 },
-                description="Beam search with length penalty and repetition control"
+                description="beam search with length penalty and ngram duplication control"
             ),
             DecodingConfig(
                 name="nucleus_sampling",
                 strategy_type="sampling",
                 params={
                     "do_sample": True,
-                    "top_p": 0.9,
-                    "temperature": 0.8,
+                    "top_p": 0.95,
+                    "temperature": 1.3,
                     "no_repeat_ngram_size": 2,
                     "num_beams": 1,
-                    "early_stopping": False  # Must be False when num_beams=1
+                    "early_stopping": False  # 
                 },
-                description="Nucleus (top-p) sampling with temperature"
+                description="nucleus (top-p) sampling with higher than avg temperature"
             )
         ]
     
     def _create_safe_generation_config(self, strategy: DecodingConfig, max_length: int = 128) -> GenerationConfig:
         """Create a GenerationConfig that passes validation checks."""
         
-        # Start with minimal safe parameters - do NOT inherit from model's config
         # because it might have conflicting settings
         safe_params = {
             "max_length": max_length,
@@ -546,7 +545,7 @@ class ExperimentConfig:
     max_train_samples: int = 10000
     max_val_samples: int = 1000
     max_test_samples: int = 1000
-    num_epochs: int = 5
+    num_epochs: int = 10
     batch_size: int = 8
     learning_rate: float = 3e-5
 
@@ -625,7 +624,7 @@ class ExperimentalMatrix:
             max_train = 1000 if test_run else 10000
             max_val = 200 if test_run else 1000
             max_test = 200 if test_run else 1000
-            epochs = 2 if test_run else 5
+            epochs = 2 if test_run else 10
             
             experiment = ExperimentConfig(
                 model_config=model_config,
@@ -1864,63 +1863,25 @@ class ComprehensiveResearchPipeline:
 def main():
     """Main function with comprehensive argument parsing and VSC storage support."""
     
-    parser = argparse.ArgumentParser(
-        description='Comprehensive Academic Research Pipeline for ProPicto with VSC Storage',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog='''
-Examples:
-  # Run full experimental matrix (12 experiments)
-  python main_runner.py --run-all
-  
-  # Run test mode (quick validation)
-  python main_runner.py --run-all --test-run
-  
-  # Run with custom results path (VSC scratch)
-  python main_runner.py --run-all --results-path $VSC_SCRATCH/pictoSeq_results
-  
-  # Run specific experiment
-  python main_runner.py --model barthez --data keywords_to_sentence
-  
-  # Run with custom limits
-  python main_runner.py --run-all --max-train 10000 --max-test 1000
-
-Experimental Matrix:
-  Models: barthez, french_t5, mt5_base
-  Data Configs: keywords_to_sentence, pictos_tokens_to_sentence, hybrid_to_sentence, direct_to_sentence  
-  Total: 3 × 4 = 12 experiments (each evaluates 3 decoding strategies)
-  
-VSC Storage:
-  Results saved to $VSC_SCRATCH/pictoSeq_results/ by default
-  Working directory: $VSC_DATA/pictoSeq/ (where code and data are)
-  Pictogram sequences tracked throughout pipeline
-        '''
-    )
+    parser = argparse.ArgumentParser(description='Comprehensive Academic Research Pipeline for ProPicto with VSC Storage',formatter_class=argparse.RawDescriptionHelpFormatter)
     
     # Main execution modes
     execution_group = parser.add_mutually_exclusive_group(required=True)
-    execution_group.add_argument('--run-all', action='store_true',
-                                help='Run complete experimental matrix (12 experiments)')
-    execution_group.add_argument('--single-experiment', action='store_true',
-                                help='Run single experiment with specified parameters')
+    execution_group.add_argument('--run-all', action='store_true',help='Run complete experimental matrix (12 experiments)')
+    execution_group.add_argument('--single-experiment', action='store_true',help='Run single experiment with specified parameters')
     
     # Single experiment parameters
-    parser.add_argument('--model', 
-                       choices=['barthez', 'french_t5', 'mt5_base'],
-                       help='Model architecture for single experiment')
-    parser.add_argument('--data',
-                       choices=['keywords_to_sentence', 'pictos_tokens_to_sentence', 
-                               'hybrid_to_sentence', 'direct_to_sentence'],
-                       help='Data configuration for single experiment')
+    parser.add_argument('--model', choices=['barthez', 'french_t5', 'mt5_base'],help='Model architecture for single experiment')
+    parser.add_argument('--data',choices=['keywords_to_sentence', 'pictos_tokens_to_sentence', 'hybrid_to_sentence', 'direct_to_sentence'],help='Data configuration for single experiment')
     
     # Storage configuration
-    parser.add_argument('--results-path', type=str,
-                       help='Custom path for results storage (default: $VSC_SCRATCH/pictoSeq_results)')
+    parser.add_argument('--results-path', type=str,help='Custom path for results storage (default: $VSC_SCRATCH/pictoSeq_results)')
     
     # Training parameters
     parser.add_argument('--max-train', type=int, default=10000,help='Maximum training samples (default: 10000)')
     parser.add_argument('--max-val', type=int, default=1000,help='Maximum validation samples (default: 1000)')
     parser.add_argument('--max-test', type=int, default=1000,help='Maximum test samples (default: 1000)')
-    parser.add_argument('--epochs', type=int, default=5,help='Number of training epochs (default: 5)')
+    parser.add_argument('--epochs', type=int, default=10,help='Number of training epochs (default: 10)')
     parser.add_argument('--batch-size', type=int, default=8,help='Training batch size (default: 8)')
     parser.add_argument('--learning-rate', type=float, default=3e-5,help='Learning rate (default: 3e-5)')
     

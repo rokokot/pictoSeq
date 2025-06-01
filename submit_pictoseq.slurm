@@ -40,9 +40,10 @@ python main_runner.py \
     --max-train 10000 \
     --max-val 1000 \
     --max-test 1000 \
-    --epochs 5 \
+    --epochs 10 \
     --batch-size 8 \
-    --learning-rate 3e-5
+    --learning-rate 3e-5 \
+    --experiment-name "final_config_10k"
 
 if [ $? -eq 0 ]; then
     echo "Completed successfully: $(date)"
