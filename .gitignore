@@ -101,3 +101,5 @@ data/processed_propicto/direct_to_sentence/train/data.json
 
 
 data/*
+.env
+*.env
