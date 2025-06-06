@@ -23,11 +23,14 @@ wheels/
 # Virtual Environments
 .env
 .venv
+/home/robin/Desktop/pictoseq/env
+/home/robin/Desktop/pictoseq/env.example
 env/
 venv/
 ENV/
 env.bak/
 venv.bak/
+env.example
 
 # Jupyter Notebooks
 .ipynb_checkpoints
@@ -101,5 +104,5 @@ data/processed_propicto/direct_to_sentence/train/data.json
 
 
 data/*
-.env
-*.env
+
+git/*
