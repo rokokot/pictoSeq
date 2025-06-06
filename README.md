@@ -10,12 +10,12 @@ PictoSeq is a simple, easily configurable experimental pipeline designed for sur
 
 ## Research Objectives
 
-Augmentative and Alternative Communication (AAC) systems rely on pictograms to help individuals with communication difficulties express themselves in natural language. This research framework addresses the critical gap in systematic evaluation of neural approaches for pictogram-to-text generation by providing:
+Augmentative and Alternative Communication (AAC) systems rely on pictograms to help individuals with communication difficulties express themselves in natural language. This framework evaluates neural approaches for pictogram-to-text generationg:
 
-1. **Systematic Architecture Comparison**: Evaluation of multiple state-of-the-art sequence-to-sequence models
-2. **Training Strategy Analysis**: Comparison of direct, keyword-mediated, and hybrid training approaches  
-3. **Comprehensive Evaluation**: Multi-metric assessment including BLEU, ROUGE-L, WER, and linguistic quality measures
-4. **Academic Reproducibility**: Complete experimental pipeline with detailed logging and result preservation
+1. **Architecture Comparison**: Evaluation of multiple state-of-the-art sequence-to-sequence models
+2. **Training Strategy**: Comparison of direct, keyword-mediated, and hybrid training approaches  
+3. **Evaluation**: Multi-metric assessment including BLEU, ROUGE-L, WER, and linguistic quality measures
+4. **Reproducibility**: Complete experimental pipeline with detailed logging and result preservation
 
 ## Configurable Modules
 
