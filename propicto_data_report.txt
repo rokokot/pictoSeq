@@ -1,0 +1,58 @@
+
+ProPicto processing Report
+
+OVERVIEW:
+- examples processed: 293,047
+- files: 13
+- UUID pictograms: 6,783
+- most common approach: keywords_to_sentence
+
+SEQUENCE STATS:
+-  sequence length: 8.6 pictograms
+-  range: 0-99 pictograms
+- Avg length: 10.1 words
+-  range: 1-102 words
+
+KEYWORD COVERAGE (how many picto sequences have complete keyword sequences):
+- Mean coverage: 99.6%
+- full coverage: 290,305
+- lower coverage (≥80%): 292,057
+
+SPLITS:
+
+KEYWORDS_TO_SENTENCE:
+  - Train: 197,033 (83.2%)
+  - Valid: 13,340 (5.6%)
+  - Test:  26,502 (11.2%)
+
+PICTOS_TOKENS_TO_SENTENCE:
+  - Train: 180,731 (76.3%)
+  - Valid: 23,572 (10.0%)
+  - Test:  32,572 (13.8%)
+
+HYBRID_TO_SENTENCE:
+  - Train: 205,977 (87.0%)
+  - Valid: 2,329 (1.0%)
+  - Test:  28,569 (12.1%)
+
+DIRECT_TO_SENTENCE:
+  - Train: 206,186 (87.0%)
+  - Valid: 2,592 (1.1%)
+  - Test:  28,097 (11.9%)
+
+samples from keywords_to_sentence:
+
+Example 1 (ID: cefc-clapi-reunion_conception_mosaic_architecture-465):
+  Input: mots: tu chercher moment comment les personnes que être
+  Target: tu te demandes un peu comment les gens qui sont euh
+  Source: corpus_clapi
+
+Example 2 (ID: cefc-cfpp-Blanche_Duchemin_F_25_Reine_Ceret_F_60_11e-2256):
+  Input: mots: passé vouloir dire tu avoir une idée
+  Target: enfin je veux dire tu inventais
+  Source: corpus_cfpp
+
+Example 3 (ID: cefc-tufs-15_LW_MG_100224-762):
+  Input: mots: oui celui-ci être plus à côté de de français
+  Target: oui c'est plus proche du français quand même
+  Source: corpus_tufs
