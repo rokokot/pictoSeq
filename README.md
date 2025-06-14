@@ -6,28 +6,26 @@
 [![ARASAAC](https://img.shields.io/badge/Pictograms-ARASAAC-purple)](https://arasaac.org/)
 [![License MIT](https://img.shields.io/badge/License-MIT-lightgrey)](LICENSE)
 
-PictoSeq is a simple, easily configurable experimental pipeline designed for surveying sequence-to-sequence LLMs for pictogram-to-text generation
+PictoSeq is a straightforward, easily configurable experimental pipeline designed to survey sequence-to-sequence LLMs for pictogram-to-text generation
 
 ## Research Objectives
 
-Augmentative and Alternative Communication (AAC) systems rely on pictograms to help individuals with communication difficulties express themselves in natural language. This framework evaluates neural approaches for pictogram-to-text generationg:
+Augmentative and Alternative Communication (AAC) systems rely on pictograms to help individuals with communication difficulties. This framework evaluates neural approaches for pictogram-to-text generationg:
 
-1. **Architecture Comparison**: Evaluation of multiple state-of-the-art sequence-to-sequence models
-2. **Training Strategy**: Comparison of direct, keyword-mediated, and hybrid training approaches  
-3. **Evaluation**: Multi-metric assessment including BLEU, ROUGE-L, WER, and linguistic quality measures
-4. **Reproducibility**: Complete experimental pipeline with detailed logging and result preservation
-
-## Configurable Modules
+1. **Architecture Comparison**: evaluation of multiple state-of-the-art sequence-to-sequence models
+2. **Training Strategy**: comparison of direct, keyword guided, and hybrid tuning approaches  
+3. **Evaluation**: assessment including BLEU, ROUGE-L, WER, and linguistic quality measures
+4. **Reproducibility**: complete experimental pipeline with detailed result presentation
 
 ### LLM Support
 
-The model support can easily be extended in the ... Currently, we provide support for the following models: 
+The model support can easily be extended in the .. add support. Currently, we provide support for the following models: 
 
 - **BARThez**: French BART model optimized for French text generation
 - **French T5**: T5 model fine-tuned specifically for French summarization tasks
 - **mT5-base**: Multilingual T5 model supporting cross-lingual capabilities
 
-#### Adding New Models
+#### Adding Models
 
 Extend the framework by adding new model configurations:
 
@@ -43,10 +41,10 @@ ModelConfig(
 
 ### Input Support
 
-- **Direct**: Pictogram IDs → French sentences
+- **Direct**: IDs → French sentences
 - **Keywords**: ARASAAC keywords → French sentences  
-- **Hybrid**: Pictogram IDs + keywords → French sentences
-- **Multi-task**: Joint training on multiple representation types
+- **Hybrid**: IDs + keywords → French sentences
+- **Multi-task**:  multiple representation types
 
 ### Decoding Strategies
 
@@ -57,7 +55,7 @@ ModelConfig(
 ###  Evaluation Metrcs
 
 - **Automatic Metrics**: BLEU, ROUGE-L, Word Error Rate (WER), lexical diversity
-- **Linguistic Analysis**: French-specific grammatical patterns and fluency assessment
+- **Linguistic Analysis**: French grammar and fluency assessment
 - **Quality Metrics**: Generation success rate and adequacy scoring
 - **Error Analysis**: Systematic categorization of generation failures
 
@@ -79,7 +77,7 @@ def _calculate_custom_metric(self, predictions, references):
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/pictoseq.git
+git clone https://github.com/rokokot/pictoSeq.git
 cd pictoseq
 
 # Create and activate conda environment
@@ -96,7 +94,7 @@ pip install scikit-learn scipy tqdm requests
 
 ### Cluster Setup
 
-For experiments with larger models, we recommend running the script on a distributed cluster, or a CUDA capable GPU. For ...
+For experiments with larger models, we recommend running the script on a cluster, or a CUDA ready GPU. For ...
 
 ```bash
 # Set up environment variables
@@ -220,19 +218,19 @@ The framework generates comprehensive results in organized directories:
 ```bash
 results/
 ├── propicto_comprehensive_[timestamp]/
-│   ├── experimental_matrix.json           # Overview of all experiments
-│   ├── comprehensive_analysis.json        # Cross-experiment analysis
-│   ├── visualizations/                    # Performance plots
+│   ├── experimental_matrix.json           
+│   ├── comprehensive_analysis.json       
+│   ├── visualizations/                
 │   │   ├── model_comparison.png
 │   │   ├── data_config_comparison.png
 │   │   └── decoding_strategy_comparison.png
-│   └── [experiment_id]/                   # Individual experiment results
+│   └── [experiment_id]/                   
 │       ├── experiment_config.json
 │       ├── final_test_results.json
 │       ├── final_test_metrics.json
 │       ├── comprehensive_results.json
 │       ├── strategy_comparison.png
-│       └── final_model/                   # Trained model files
+│       └── final_model/                   
 ```
 
 
@@ -260,13 +258,13 @@ results/
 
 ```
 pictoseq/
-├── main_runner.py                 # Main experimental pipeline
+├── main_runner.py                 
 ├── scripts/
-│   ├── data_processing/          # Data preparation utilities
-│   └── analysis/                 # Result analysis tools
-├── models/                       # Trained model storage
-├── data/                         # Dataset storage
-└── results/                      # Experimental results
+│   ├── data_processing/      
+│   └── analysis/                 
+├── models/                       
+├── data/                      
+└── results/                      
 ```
 
 ## References
